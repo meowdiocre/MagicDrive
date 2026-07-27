@@ -2,7 +2,7 @@ export { Avatar } from './Avatar'
 export { Badge } from './Badge'
 export { Button } from './Button'
 export type { ButtonProps } from './Button'
-export { Dialog } from './Dialog'
+export { Dialog, DialogDescription } from './Dialog'
 export {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,

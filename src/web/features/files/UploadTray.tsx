@@ -31,7 +31,7 @@ export function UploadTray({ uploads, onDismiss }: { uploads: UploadTask[]; onDi
         )}
       </header>
 
-      <ul className="grid gap-px bg-vault-rule">
+      <ul className="grid max-h-[min(24rem,50dvh)] gap-px overflow-y-auto bg-vault-rule">
         {uploads.map(task => (
           <li key={task.id} className="grid gap-1.5 bg-vault-surface px-4 py-2.5">
             <div className="flex items-center gap-2 text-sm">

@@ -11,7 +11,6 @@ interface SelectProps {
   children: ReactNode
 }
 
-/** Unlike a native select, options can carry badges and secondary text. */
 export function Select({ value, onValueChange, label, className, children }: SelectProps) {
   return (
     <S.Root value={value} onValueChange={onValueChange}>

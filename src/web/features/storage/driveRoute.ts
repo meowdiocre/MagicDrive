@@ -11,7 +11,7 @@ export function resolveDriveId(drives: RoutableDrive[], requested: string, fallb
 
 export function driveHref(href: string, drive?: RoutableDrive): string {
   const url = new URL(href)
-  if (!drive || drive.is_virtual) url.searchParams.delete('drive')
+  if (!drive || (drive.is_virtual && drive.id === 'global')) url.searchParams.delete('drive')
   else url.searchParams.set('drive', drive.id)
   return `${url.pathname}${url.search}${url.hash}`
 }

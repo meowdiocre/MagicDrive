@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Copy, FolderPlus, FolderSearch, HardDrive, Layers, LoaderCircle, Lock, LockKeyhole, Upload, WandSparkles, X } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { notify } from '@/lib/toast'
@@ -17,10 +17,15 @@ import { LayoutToggle } from './LayoutToggle'
 import { PreviewModal } from './PreviewModal'
 import { isPooledFolder } from './pooled'
 import { UploadTray } from './UploadTray'
+import { CapacityPanel } from './CapacityPanel'
+import { findReadme } from './readme'
+import { FolderAccessDialog, UnlockFolderDialog } from './FolderAccessDialogs'
 import type { FilesState } from './useFiles'
 import type { DrivesState } from '@/features/storage/useDrives'
 import type { SharesState } from '@/features/shares/useShares'
 import type { FileItem, Layout } from '@/types'
+
+const FolderReadme = lazy(() => import('./FolderReadme'))
 
 interface FilesViewProps {
   files: FilesState
@@ -38,8 +43,11 @@ export function FilesView({ files, shares, drives, layout, canShare, onChangeLay
   const [shareItem, setShareItem] = useState<FileItem | null>(null)
   const [renameTarget, setRenameTarget] = useState<FileItem | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<FileItem | null>(null)
+  const [accessTarget, setAccessTarget] = useState<FileItem | null>(null)
+  const [unlockFolderTarget, setUnlockFolderTarget] = useState<FileItem | null>(null)
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [capacityRefresh, setCapacityRefresh] = useState(0)
   const [dragOver, setDragOver] = useState(false)
   const [unlocking, setUnlocking] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -52,15 +60,22 @@ export function FilesView({ files, shares, drives, layout, canShare, onChangeLay
   // The Worker grants folder creation in the pool to magicians alone, so the
   // capability it sends back is the honest signal for the role.
   const magician = pooled && can('mkdir')
+  const showCapacity = (pooled && magician) || (vault && can('upload'))
   const readOnly = Boolean(activeDrive && !activeDrive.is_owner && !activeDrive.is_virtual)
   const title = isSearchView ? 'Search results' : path === '/' ? (activeDrive?.name ?? 'Files') : path.split('/').at(-1)
+  const readme = !isSearchView && !locked ? findReadme(items) : undefined
 
   useEffect(() => {
     if (locked) setUnlocking(true)
   }, [activeDrive?.id, locked])
 
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
+  }, [activeDriveId, path])
+
   function openItem(item: FileItem) {
-    if (item.isFolder) files.openFolder(item)
+    if (item.isFolder && item.locked) setUnlockFolderTarget(item)
+    else if (item.isFolder) files.openFolder(item)
     else setPreviewItem(item)
   }
 
@@ -81,6 +96,7 @@ export function FilesView({ files, shares, drives, layout, canShare, onChangeLay
     setUploading(true)
     try {
       const { uploaded, failed } = await files.uploadFiles(selected)
+      if (uploaded > 0) setCapacityRefresh(value => value + 1)
       if (uploaded && !failed) notify.success(uploaded === 1 ? `Uploaded ${selected[0].name}` : `Uploaded ${uploaded} files`)
       else if (uploaded && failed) notify.message(`Uploaded ${uploaded} of ${selected.length}`, `${failed} failed. See the list above.`)
       else notify.error(null, 'Upload failed')
@@ -109,23 +125,23 @@ export function FilesView({ files, shares, drives, layout, canShare, onChangeLay
               {title}
             </h1>
             {pooled && (
-              <Tooltip label="Combined view of all connected storage">
-                <span tabIndex={0}><Badge tone="accent"><Layers /> pooled</Badge></span>
+              <Tooltip label="Shared contributed storage">
+                <span><Badge tone="accent"><Layers /> pooled</Badge></span>
               </Tooltip>
             )}
             {magician && (
-              <Tooltip label="Folders are added to every connected storage; uploads use the pool">
-                <span tabIndex={0}><Badge tone="accent"><WandSparkles /> magician</Badge></span>
+              <Tooltip label="Cauldron administrator">
+                <span><Badge tone="accent"><WandSparkles /> magician</Badge></span>
               </Tooltip>
             )}
             {vault && (
-              <Tooltip label="Files are encrypted and distributed across the owner's connected storage">
-                <span tabIndex={0}><Badge tone="accent"><WandSparkles /> managed</Badge></span>
+              <Tooltip label="Encrypted distributed storage">
+                <span><Badge tone="accent"><WandSparkles /> managed</Badge></span>
               </Tooltip>
             )}
             {readOnly && (
               <Tooltip label={`${activeDrive?.owner_name} owns this storage. You can browse and download.`}>
-                <span tabIndex={0}><Badge tone="neutral"><Lock /> read-only</Badge></span>
+                <span><Badge tone="neutral"><Lock /> read-only</Badge></span>
               </Tooltip>
             )}
             {activeDrive?.access_mode === 'protected' && (
@@ -181,7 +197,7 @@ export function FilesView({ files, shares, drives, layout, canShare, onChangeLay
         </div>
       </header>
 
-      {error && !locked && (
+      {error && !locked && items.length > 0 && (
         <ErrorBanner
           message={error}
           onRetry={() => void (isSearchView ? files.search(files.searchQuery) : files.loadFiles(path))}
@@ -190,107 +206,123 @@ export function FilesView({ files, shares, drives, layout, canShare, onChangeLay
 
       <UploadTray uploads={files.uploads} onDismiss={files.dismissUploads} />
 
-      <section
-        className={cn(
-          'overflow-hidden rounded-vault-md border border-vault-rule bg-vault-surface transition-[border-color,box-shadow] duration-(--dur-fast)',
-          dragOver && 'border-vault-accent ring-2 ring-vault-accent-soft',
-        )}
-        onDragOver={event => { if (can('upload') && !uploading) { event.preventDefault(); setDragOver(true) } }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={event => {
-          if (!can('upload') || uploading) return
-          event.preventDefault()
-          setDragOver(false)
-          void handleFiles(event.dataTransfer.files)
-        }}
-      >
-        <div className="flex min-h-10 items-center justify-between gap-4 border-b border-vault-rule px-4 font-vault-mono text-xs text-vault-muted">
-          <span aria-live="polite">{locked ? 'Locked' : loading ? 'Loading...' : `${items.length} item${items.length === 1 ? '' : 's'}`}</span>
-          <span className="truncate text-vault-subtle">
-            {locked ? 'storage password required'
-              : can('upload')
-              ? vault ? 'drop files to upload to MagicVault'
-                : pooled ? 'drop files to upload to the pool' : 'drop files to upload'
-              : vault ? 'encrypted files on their owners’ storage'
-                : pooled
-                  ? magician ? 'create a folder to start using the pool' : 'combined space from every connected storage'
-                  : readOnly ? `shared by ${activeDrive?.owner_name}` : 'read-only'}
-          </span>
+      <div className={cn(
+        'grid gap-4',
+        showCapacity && 'grid-cols-[minmax(0,1fr)_18rem] max-[72rem]:grid-cols-1',
+      )}>
+        <div className="grid min-w-0 content-start gap-4">
+          <section
+            className={cn(
+              'overflow-hidden rounded-vault-md border border-vault-rule bg-vault-surface transition-[border-color,box-shadow] duration-(--dur-fast)',
+              dragOver && 'border-vault-accent ring-2 ring-vault-accent-soft',
+            )}
+            onDragOver={event => {
+              event.preventDefault()
+              if (can('upload') && !uploading) setDragOver(true)
+            }}
+            onDragLeave={event => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragOver(false)
+            }}
+            onDrop={event => {
+              event.preventDefault()
+              setDragOver(false)
+              if (!can('upload') || uploading) return
+              void handleFiles(event.dataTransfer.files)
+            }}
+          >
+            <div className="flex min-h-10 items-center border-b border-vault-rule px-4 font-vault-mono text-xs text-vault-muted">
+              <span aria-live="polite">{locked ? 'Locked' : loading ? 'Loading...' : `${items.length} item${items.length === 1 ? '' : 's'}`}</span>
+            </div>
+
+            {locked ? (
+              <EmptyState
+                icon={LockKeyhole}
+                title={`${activeDrive?.name ?? 'Storage'} is locked`}
+                description="Enter its password to browse, search, preview, or download files."
+                action={<Button variant="primary" size="sm" onClick={() => setUnlocking(true)}>Unlock storage</Button>}
+              />
+            ) : loading ? (
+              <LoadingRows layout={layout} />
+            ) : items.length === 0 ? (
+              error ? (
+                <EmptyState
+                  icon={FolderSearch}
+                  title={isSearchView ? 'Search failed' : 'Could not load this folder'}
+                  description="Try again or choose another storage."
+                  action={<Button variant="secondary" size="sm" onClick={() => void (isSearchView ? files.search(files.searchQuery) : files.loadFiles(path))}>Retry</Button>}
+                />
+              ) : isSearchView ? (
+                <EmptyState
+                  icon={FolderSearch}
+                  title="No matches"
+                  description="No files match that search. Try another term or storage."
+                  action={<Button variant="secondary" size="sm" onClick={files.clearSearch}>Back to files</Button>}
+                />
+              ) : drives.items.length === 0 ? (
+                <EmptyState
+                  icon={HardDrive}
+                  title="Nothing here yet"
+                  description="Connect Google Drive, WebDAV, or S3 to get started."
+                  illustration
+                  action={<Button variant="secondary" size="sm" onClick={onConnect}>Go to storage</Button>}
+                />
+              ) : (
+                <EmptyState
+                  icon={FolderSearch}
+                  title="This folder is empty"
+                  description={can('upload')
+                    ? 'Drop files here to upload them, or create a folder.'
+                    : 'Check a different folder, or switch storage.'}
+                  action={<Button variant="secondary" size="sm" onClick={onConnect}>Manage storage</Button>}
+                />
+              )
+            ) : (
+              <ul className={gridClass(layout)} aria-label={`${title} contents`}>
+                {items.map(item => (
+                  <FileRow
+                    key={`${item.id}-${item.name}`}
+                    item={item}
+                    layout={layout}
+                    driveId={activeDriveId}
+                    navigable={!isSearchView}
+                    onOpen={() => openItem(item)}
+                    onShare={canShare && !item.system ? () => setShareItem(item) : undefined}
+                    onRename={can('rename') && !item.locked && (!isSearchView || !pooled) && !isPooledFolder(item) && !item.readOnly ? () => setRenameTarget(item) : undefined}
+                    onDelete={can('delete') && !item.locked && (!isSearchView || !pooled) && !item.readOnly ? () => setDeleteTarget(item) : undefined}
+                    onAccess={item.isFolder && ((vault && !item.readOnly) || magician) ? () => setAccessTarget(item) : undefined}
+                  />
+                ))}
+              </ul>
+            )}
+
+            {nextPageToken && (
+              <div className="flex justify-center border-t border-vault-rule p-4">
+                <Button variant="secondary" size="sm" onClick={() => void files.loadMore()} disabled={loadingMore}>
+                  {loadingMore ? 'Loading...' : 'Load more'}
+                </Button>
+              </div>
+            )}
+
+            {truncated && (
+              <p className="border-t border-vault-rule px-4 py-3 font-vault-mono text-xs text-vault-subtle">
+                Some items are not shown here. Open the source storage to view the full folder.
+              </p>
+            )}
+          </section>
+
+          {readme && activeDriveId && (
+            <Suspense fallback={null}>
+              <FolderReadme item={readme} driveId={activeDriveId} onOpen={() => setPreviewItem(readme)} />
+            </Suspense>
+          )}
         </div>
 
-        {locked ? (
-          <EmptyState
-            icon={LockKeyhole}
-            title={`${activeDrive?.name ?? 'Storage'} is locked`}
-            description="Enter its password to browse, search, preview, or download files."
-            action={<Button variant="primary" size="sm" onClick={() => setUnlocking(true)}>Unlock storage</Button>}
-          />
-        ) : loading ? (
-          <LoadingRows layout={layout} />
-        ) : items.length === 0 ? (
-          error ? (
-            <EmptyState
-              icon={FolderSearch}
-              title={isSearchView ? 'Search failed' : 'Could not load this folder'}
-              description={isSearchView ? 'Retry above, or change the search term.' : 'Retry above, or pick a different storage.'}
-            />
-          ) : isSearchView ? (
-            <EmptyState
-              icon={FolderSearch}
-              title="No matches"
-              description="No files match that search. Try another term or storage."
-              action={<Button variant="secondary" size="sm" onClick={files.clearSearch}>Back to files</Button>}
-            />
-          ) : drives.items.length === 0 ? (
-            <EmptyState
-              icon={HardDrive}
-              title="Nothing here yet"
-              description="Connect Google Drive, WebDAV, or S3 to get started."
-              illustration
-              action={<Button variant="secondary" size="sm" onClick={onConnect}>Go to storage</Button>}
-            />
-          ) : (
-            <EmptyState
-              icon={FolderSearch}
-              title="This folder is empty"
-              description={can('upload')
-                ? 'Drop files here to upload them, or create a folder.'
-                : 'Check a different folder, or switch storage.'}
-              action={<Button variant="secondary" size="sm" onClick={onConnect}>Manage storage</Button>}
-            />
-          )
-        ) : (
-          <ul className={gridClass(layout)} aria-label={`${title} contents`}>
-            {items.map(item => (
-              <FileRow
-                key={`${item.id}-${item.name}`}
-                item={item}
-                layout={layout}
-                driveId={activeDriveId}
-                navigable={!isSearchView}
-                onOpen={() => openItem(item)}
-                onShare={canShare ? () => setShareItem(item) : undefined}
-                onRename={can('rename') && (!isSearchView || !pooled) && !isPooledFolder(item) && !item.readOnly ? () => setRenameTarget(item) : undefined}
-                onDelete={can('delete') && (!isSearchView || !pooled) && !item.readOnly ? () => setDeleteTarget(item) : undefined}
-              />
-            ))}
-          </ul>
-        )}
-
-        {nextPageToken && (
-          <div className="flex justify-center border-t border-vault-rule p-4">
-            <Button variant="secondary" size="sm" onClick={() => void files.loadMore()} disabled={loadingMore}>
-              {loadingMore ? 'Loading...' : 'Load more'}
-            </Button>
+        {showCapacity && activeDriveId && (
+          <div className="max-[72rem]:order-first">
+            <CapacityPanel driveId={activeDriveId} refreshKey={capacityRefresh} />
           </div>
         )}
-
-        {truncated && (
-          <p className="border-t border-vault-rule px-4 py-3 font-vault-mono text-xs text-vault-subtle">
-            Some items are not shown here. Open the source storage to view the full folder.
-          </p>
-        )}
-      </section>
+      </div>
 
       {activeDrive?.access_mode === 'protected' && (
         <UnlockStorageDialog
@@ -311,7 +343,7 @@ export function FilesView({ files, shares, drives, layout, canShare, onChangeLay
           item={previewItem}
           driveId={activeDriveId}
           onClose={() => setPreviewItem(null)}
-          onShare={canShare ? item => { setPreviewItem(null); setShareItem(item) } : undefined}
+          onShare={canShare && !previewItem.system ? item => { setPreviewItem(null); setShareItem(item) } : undefined}
         />
       )}
 
@@ -319,16 +351,37 @@ export function FilesView({ files, shares, drives, layout, canShare, onChangeLay
         <ShareDialog item={shareItem} shares={shares} driveId={activeDriveId} onClose={() => setShareItem(null)} />
       )}
 
+      <FolderAccessDialog
+        item={accessTarget}
+        onSave={async (mode, password) => {
+          if (!accessTarget) return
+          await files.setFolderAccess(accessTarget, mode, password)
+          notify.success(`Updated access for “${accessTarget.name}”`)
+        }}
+        onClose={() => setAccessTarget(null)}
+      />
+
+      <UnlockFolderDialog
+        item={unlockFolderTarget}
+        onUnlock={async password => {
+          if (!unlockFolderTarget) return
+          await files.unlockFolder(unlockFolderTarget, password)
+          const target = unlockFolderTarget
+          setUnlockFolderTarget(null)
+          files.openFolder(target)
+          notify.success(`Unlocked “${target.name}”`)
+        }}
+        onClose={() => setUnlockFolderTarget(null)}
+      />
+
       <PromptDialog
         open={creatingFolder}
         title="New folder"
         label="Folder name"
         submitLabel="Create"
         onSubmit={async name => {
-          const created = await files.createFolder(name)
-          const refused = created.storages?.filter(target => !target.ok) ?? []
-          if (refused.length === 0) notify.success(`Created “${name}”`)
-          else notify.message(`Created “${name}”`, `Not on ${refused.map(target => target.storage).join(', ')}: ${refused[0].error}`)
+          await files.createFolder(name)
+          notify.success(`Created “${name}”`)
         }}
         onClose={() => setCreatingFolder(false)}
       />
@@ -360,6 +413,7 @@ export function FilesView({ files, shares, drives, layout, canShare, onChangeLay
           if (!deleteTarget) return
           try {
             await files.deleteItem(deleteTarget)
+            setCapacityRefresh(value => value + 1)
             notify.success(`Deleted “${deleteTarget.name}”`)
           } catch (cause) {
             notify.error(cause, 'Delete failed')

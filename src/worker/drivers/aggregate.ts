@@ -1,34 +1,32 @@
 import { HTTPException } from 'hono/http-exception'
-import { createDriver } from './registry'
-import type { Capability, StorageDriver } from './contract'
 import { decodeBase64UrlUtf8, encodeBase64UrlUtf8 } from '../lib/base64'
-import { hmacSha256, toHex } from '../lib/crypto'
+import { hmacSha256, sha256Hex, toHex } from '../lib/crypto'
+import { assertFolderReadable, evaluateFolderPolicies, folderAccess, isFolderAccessError } from '../lib/folder-access'
+import type { FolderAccessState } from '../lib/folder-access'
+import { providerFileResponse } from '../lib/file-response'
+import { isValidName, joinVirtualPath, normalizeVirtualPath, pathParts } from '../lib/path'
 import {
-  assertNoPoolDeletion, insertPoolFolder, journalPoolDeletion,
-  loadPoolChildren, loadPoolDriveIds, poolProviderPath, removePoolSubtree,
+  assertNoPoolDeletion, insertPoolFolder, loadPoolChildren, loadPoolDriveIds, removePoolSubtree,
 } from '../lib/pool'
-import { pickPlacement, release, reserve, reservedBytes } from '../lib/placement'
-import { driveStatus, invalidateStatus } from '../lib/status'
-import { joinVirtualPath, normalizeVirtualPath, pathParts } from '../lib/path'
-import { ensureFolder, ensurePath, findFolder, findFolderNamed, surveyFolder } from './tree'
-import type { Bindings, DriveRecord, FileItem, ListResult, PoolFolderRecord } from '../types'
+import {
+  assertPoolParent, assertPoolPathFree, deletePoolObjectData, deletePoolSubtreeData, fetchPoolSegment,
+  getPoolObject, insertPoolObject, listPoolObjects, listPoolSegments, searchPoolObjects, storePoolSegment,
+} from '../lib/pool-vault'
+import { CAULDRON_README, CAULDRON_README_ID, systemReadmeItem, systemReadmeResponse } from '../lib/readme'
+import { decryptSegment, generateWrappedKey, unwrapKey } from '../lib/vault-crypto'
+import { segmentSize } from '../lib/vault'
+import { parseRange } from './vault'
+import type { Capability, StorageDriver } from './contract'
+import type { Bindings, DriveRecord, FileItem, ListResult, PoolFolderRecord, PoolObjectRecord, PoolSegmentRecord } from '../types'
 
 export const GLOBAL_DRIVE_ID = 'global'
-
 export const POOL_NAME = 'The Cauldron'
+export const POOL_FOLDER_MIME = 'application/vnd.magicdrive.pool-folder'
 
-/** A folder that spans every connection, rather than living on any one of them. */
-export const POOL_FOLDER_MIME = 'application/vnd.magicdrive.pooled-folder'
-
-// `pool` addresses virtual folders; `pool:<driveId>` addresses HMAC-tagged files.
 const POOL_ID = 'pool'
+const MANAGED_FILE_ID = 'managed'
 const POOL_FILE_PREFIX = 'pool:'
 const TAG_LENGTH = 16
-
-const POOL_MERGE_PAGES = 4
-const POOL_SEARCH_MAX_DEPTH = 12
-const POOL_SEARCH_MAX_ITEMS = 1000
-
 const READ_ONLY: readonly Capability[] = ['list', 'search', 'download', 'thumbnail']
 const FULL: readonly Capability[] = [...READ_ONLY, 'upload', 'mkdir', 'delete', 'rename']
 
@@ -37,251 +35,146 @@ export interface PoolActor {
   isMagician: boolean
 }
 
-/** Per-connection outcome of a fan-out, so a partial result can be reported honestly. */
-export interface PoolTarget {
-  storage: string
-  ok: boolean
-  error?: string
-}
-
-/** Public merged reads; only Magicians can write inside verified pool folders. */
+/** Encrypted shared namespace. Providers receive opaque ciphertext pieces only. */
 export class AggregateDriver implements StorageDriver {
   readonly capabilities = FULL
-
   private readonly roots: Map<string, PoolFolderRecord>
 
   constructor(
     private readonly env: Bindings,
     private readonly drives: DriveRecord[],
     roots: PoolFolderRecord[],
-    private readonly actor: PoolActor
+    private readonly actor: PoolActor,
+    private readonly request: Request | null = null,
+    private readonly bypassAccess = false,
   ) {
     this.roots = new Map(roots.map(root => [root.name, root]))
   }
 
   allowed(path: string): readonly Capability[] {
     if (!this.actor.isMagician) return READ_ONLY
-    const parts = pathParts(path)
-    if (parts.length === 0) return [...READ_ONLY, 'mkdir']
-    return this.rootFor(parts[0]) === null ? READ_ONLY : FULL
+    return pathParts(path).length === 0 ? [...READ_ONLY, 'mkdir'] : FULL
   }
 
-  private rootFor(segment: string): string | null {
-    if (this.roots.has(segment)) return segment
-    const wanted = segment.toLowerCase()
-    return [...this.roots.keys()].find(name => name.toLowerCase() === wanted) ?? null
-  }
-
-  /** Canonicalize virtual segments because pool names are case-insensitive but providers are not. */
-  private async pooledPath(path: string): Promise<string | null> {
-    const parts = pathParts(path)
-    if (parts.length === 0) return null
-    const root = this.rootFor(parts[0])
-    if (root === null) return null
-
-    const resolved = [root]
-    for (const segment of parts.slice(1)) {
-      const parent = `/${resolved.join('/')}`
-      const children = await loadPoolChildren(this.env.DB, parent)
-      const wanted = segment.toLowerCase()
-      resolved.push(children.find(child => child.name.toLowerCase() === wanted)?.name ?? segment)
-    }
-    return `/${resolved.join('/')}`
-  }
-
-  async list(path: string, pageToken?: string | null): Promise<ListResult> {
+  async list(path: string): Promise<ListResult> {
     const cleanPath = normalizeVirtualPath(path)
-    const parts = pathParts(cleanPath)
-    if (parts.length === 0) return this.listRoot()
-    const pooled = await this.pooledPath(cleanPath)
-    if (pooled !== null) return this.listPooled(pooled)
-    throw new HTTPException(404, { message: 'Pool folder not found' })
-  }
+    if (cleanPath === '/') return this.listRoot()
+    const folder = await this.folderAt(cleanPath)
+    if (!folder) throw new HTTPException(404, { message: 'Pool folder not found' })
+    await this.assertReadable(cleanPath)
 
-  private listRoot(): ListResult {
-    const conjured = [...this.roots.values()].map(root => poolFolderItem(root.path, root.name))
-    return { path: '/', items: conjured, nextPageToken: null }
-  }
-
-  /** Merge verified member listings; bounded walks report `truncated`. */
-  private async listPooled(path: string): Promise<ListResult> {
-    const drives = await this.poolDrives(path)
-    const readings = await Promise.all(drives.map(async drive => {
-      const collected: FileItem[] = []
-      let pageToken: string | null = null
-      try {
-        const driver = createDriver(this.env, drive)
-        const providerPath = poolProviderPath(drive.id, path)
-        for (let page = 0; page < POOL_MERGE_PAGES; page += 1) {
-          const result: ListResult = await driver.list(providerPath, pageToken)
-          collected.push(...result.items)
-          pageToken = result.nextPageToken
-          if (!pageToken) break
-        }
-      } catch {
-        // An unreachable member must not blank out the whole folder.
-        return { drive, collected, more: false }
-      }
-      return { drive, collected, more: pageToken !== null }
-    }))
-
-    const items: FileItem[] = []
-    const claimed = new Set<string>()
-    for (const child of await loadPoolChildren(this.env.DB, path)) {
-      claimed.add(child.name.toLowerCase())
-      items.push(poolFolderItem(child.path, child.name))
-    }
-    for (const reading of readings) {
-      for (const item of reading.collected) {
-        const key = item.name.toLowerCase()
-        // The first member claiming a name owns it in the merged namespace.
-        if (claimed.has(key)) continue
-        claimed.add(key)
-        items.push(item.isFolder
-          ? poolFolderItem(joinVirtualPath(path, item.name), item.name, item)
-          : { ...item, id: await encodePoolFileId(this.env.DATA_ENCRYPTION_KEY, reading.drive.id, item.id) })
-      }
-    }
+    const folders = await loadPoolChildren(this.env.DB, cleanPath)
+    const folderItems = (await Promise.all(folders.map(folder => this.folderItem(folder))))
+      .filter((item): item is FileItem => item !== null)
+    const files = (await listPoolObjects(this.env, cleanPath)).map(object => this.fileItem(object))
+    const items = [...folderItems, ...files]
     items.sort((left, right) => Number(right.isFolder) - Number(left.isFolder) || left.name.localeCompare(right.name))
+    return { path: cleanPath, items, nextPageToken: null }
+  }
 
-    return { path, items, nextPageToken: null, truncated: readings.some(reading => reading.more) }
+  private async listRoot(): Promise<ListResult> {
+    const folders = (await Promise.all([...this.roots.values()].map(folder => this.folderItem(folder))))
+      .filter((item): item is FileItem => item !== null)
+    return {
+      path: '/',
+      items: [...folders, systemReadmeItem(CAULDRON_README_ID, CAULDRON_README)],
+      nextPageToken: null,
+    }
   }
 
   async search(query: string): Promise<FileItem[]> {
-    const wanted = query.trim().toLowerCase()
-    if (!wanted) return []
+    const wanted = query.trim()
+    if (wanted.length < 2) return []
+    const [files, folders] = await Promise.all([
+      searchPoolObjects(this.env, wanted),
+      this.env.DB.prepare(
+        `SELECT id, path, name, parent_path, created_by, access_mode, access_password_hash
+           FROM pool_folders WHERE name LIKE ? ESCAPE '\\' COLLATE NOCASE
+           ORDER BY name COLLATE NOCASE ASC LIMIT 20`
+      ).bind(`%${wanted.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`)
+        .all<PoolFolderRecord>(),
+    ])
     const results: FileItem[] = []
-    const claimed = new Set<string>()
-    for (const root of this.roots.values()) {
-      if (results.length >= POOL_SEARCH_MAX_ITEMS) break
-      for (const drive of await this.poolDrives(root.path)) {
-        if (results.length >= POOL_SEARCH_MAX_ITEMS) break
-        try {
-          await this.searchDrive(drive, root.path, wanted, results, claimed)
-        } catch {
-          // One unreachable contributor must not blank out the pool search.
-        }
-      }
-    }
-    return results
-  }
-
-  private async searchDrive(
-    drive: DriveRecord,
-    rootPath: string,
-    wanted: string,
-    results: FileItem[],
-    claimed: Set<string>,
-  ): Promise<void> {
-    const driver = createDriver(this.env, drive)
-    const queue: Array<{ path: string; depth: number }> = [{ path: rootPath, depth: 0 }]
-    while (queue.length > 0 && results.length < POOL_SEARCH_MAX_ITEMS) {
-      const current = queue.shift()!
-      let pageToken: string | null = null
-      for (let page = 0; page < POOL_MERGE_PAGES && results.length < POOL_SEARCH_MAX_ITEMS; page += 1) {
-        const listing = await driver.list(poolProviderPath(drive.id, current.path), pageToken)
-        for (const item of listing.items) {
-          const virtualPath = joinVirtualPath(current.path, item.name)
-          if (item.isFolder && current.depth < POOL_SEARCH_MAX_DEPTH) {
-            queue.push({ path: virtualPath, depth: current.depth + 1 })
-          }
-          if (!item.name.toLowerCase().includes(wanted) || claimed.has(virtualPath.toLowerCase())) continue
-          claimed.add(virtualPath.toLowerCase())
-          results.push(item.isFolder
-            ? poolFolderItem(virtualPath, item.name, item)
-            : { ...item, id: await encodePoolFileId(this.env.DATA_ENCRYPTION_KEY, drive.id, item.id) })
-        }
-        pageToken = listing.nextPageToken
-        if (!pageToken) break
-      }
-    }
-  }
-
-  async download(fileId: string, request: Request, disposition?: 'attachment' | 'inline'): Promise<Response> {
-    const { drive, id } = await this.target(fileId)
-    return createDriver(this.env, drive).download(id, request, disposition)
-  }
-
-  async thumbnail(fileId: string): Promise<Response> {
-    const { drive, id } = await this.target(fileId)
-    return createDriver(this.env, drive).thumbnail(id)
-  }
-
-  async mkdir(path: string, name: string): Promise<FileItem> {
-    return (await this.conjureFolder(path, name)).item
-  }
-
-  /** Create the virtual folder on verified members and report partial failures. */
-  async conjureFolder(path: string, name: string): Promise<{ item: FileItem; storages: PoolTarget[] }> {
-    const parts = pathParts(path)
-    const cleanPath = parts.length === 0 ? '/' : await this.pooledPath(path) ?? ''
-    if (!cleanPath) {
-      throw new HTTPException(403, {
-        message: `Folders here belong to ${POOL_NAME}. Switch to that storage to add folders inside it.`,
-      })
-    }
-    if (parts.length === 0) this.assertRootNameFree(name)
-    const drives = parts.length === 0 ? this.drives : await this.poolDrives(cleanPath)
-    if (drives.length === 0) {
-      throw new HTTPException(404, { message: 'No storage is connected yet' })
-    }
-    await assertNoPoolDeletion(this.env.DB, cleanPath, name)
-    // Never adopt an existing contributor folder as a new pool root.
-    const unverified = new Map<string, string>()
-    if (parts.length === 0) {
-      const adopted = await Promise.all(drives.map(async drive => {
-        try {
-          const driver = createDriver(this.env, drive)
-          const providerRoot = poolProviderPath(drive.id, '/')
-          await ensurePath(driver, providerRoot)
-          return await findFolderNamed(driver, providerRoot, name) ? drive.name : null
-        } catch (cause) {
-          unverified.set(drive.id, reason(cause))
-          return null
-        }
-      }))
-      const holder = adopted.find(entry => entry !== null)
-      if (holder) {
-        throw new HTTPException(409, {
-          message: `“${name}” already exists on ${holder}. Pick a name no connected storage is using.`,
-        })
-      }
-    }
-
-    const attempts = await Promise.all(drives.map(async drive => {
-      const verificationError = unverified.get(drive.id)
-      if (verificationError) {
-        return { drive, storage: drive.name, ok: false, error: `could not verify the folder name: ${verificationError}` }
-      }
-      const driver = createDriver(this.env, drive)
-      const providerPath = poolProviderPath(drive.id, cleanPath)
-      if (!driver.capabilities.includes('mkdir')) {
-        return { drive, storage: drive.name, ok: false, error: 'connection is read-only' }
-      }
+    for (const folder of folders.results ?? []) {
       try {
-        await ensurePath(driver, providerPath)
-        await ensureFolder(driver, providerPath, name)
-        return { drive, storage: drive.name, ok: true }
-      } catch (cause) {
-        return { drive, storage: drive.name, ok: false, error: reason(cause) }
+        const access = await folderAccess(this.env, 'pool', folder.path, this.request, this.actor.userId, this.actor.isMagician)
+        if (access.hidden || access.locked) continue
+        const item = await this.folderItem(folder, access)
+        if (item) results.push(item)
+      } catch (error) {
+        if (!isFolderAccessError(error)) throw error
       }
-    }))
-
-    if (attempts.every(target => !target.ok)) {
-      throw new HTTPException(502, {
-        message: `Could not create “${name}” on any connected storage: ${attempts[0].error}`,
-      })
     }
+    for (const object of files) {
+      try {
+        await this.assertReadable(object.parent_path)
+        results.push(this.fileItem(object))
+      } catch (error) {
+        if (!isFolderAccessError(error)) throw error
+      }
+    }
+    return results.slice(0, 100)
+  }
 
-    const target = joinVirtualPath(cleanPath, name)
-    await insertPoolFolder(this.env.DB, {
-      path: target,
-      name,
-      parentPath: cleanPath,
-      userId: this.actor.userId,
-    }, attempts.filter(attempt => attempt.ok).map(attempt => attempt.drive.id))
-    const storages = attempts.map(({ drive: _drive, ...attempt }) => attempt)
-    return { item: poolFolderItem(target, name), storages }
+  async download(fileId: string, request: Request, disposition: 'attachment' | 'inline' = 'attachment'): Promise<Response> {
+    if (fileId === CAULDRON_README_ID) return systemReadmeResponse(CAULDRON_README, disposition)
+    const object = await this.fileOrThrow(fileId)
+    await this.assertReadable(object.parent_path)
+    const segments = await listPoolSegments(this.env, object.id)
+    if (segments.length === 0 || object.size <= 0) throw new HTTPException(500, { message: 'File has no stored content' })
+    const key = await unwrapKey(this.env.DATA_ENCRYPTION_KEY, object.key_enc)
+    const range = parseRange(request.headers.get('Range'), object.size)
+    const [start, end] = range ?? [0, object.size - 1]
+    const body = this.segmentStream(object, segments, key, start, end)
+    const headers = new Headers({
+      'Content-Type': object.content_type,
+      'Content-Length': String(end - start + 1),
+      'Accept-Ranges': 'bytes',
+    })
+    if (range) headers.set('Content-Range', `bytes ${start}-${end}/${object.size}`)
+    return providerFileResponse(new Response(body, { status: range ? 206 : 200, headers }), object.name, disposition)
+  }
+
+  private segmentStream(
+    object: PoolObjectRecord,
+    segments: PoolSegmentRecord[],
+    key: CryptoKey,
+    start: number,
+    end: number,
+  ): ReadableStream<Uint8Array> {
+    const env = this.env
+    const byIndex = new Map(segments.map(segment => [segment.idx, segment]))
+    let index = Math.floor(start / object.segment_size)
+    const lastIndex = Math.floor(end / object.segment_size)
+    return new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (index > lastIndex) {
+          controller.close()
+          return
+        }
+        const segment = byIndex.get(index)
+        if (!segment) {
+          controller.error(new Error(`Missing segment ${index}`))
+          return
+        }
+        try {
+          const cipher = await fetchPoolSegment(env, segment)
+          if (await sha256Hex(cipher) !== segment.sha256) throw new Error(`Segment ${index} failed its integrity check`)
+          const plaintext = await decryptSegment(key, object.id, index, cipher)
+          const offset = index * object.segment_size
+          const from = Math.max(start - offset, 0)
+          const to = Math.min(end - offset + 1, plaintext.byteLength)
+          controller.enqueue(new Uint8Array(plaintext.slice(from, to)))
+          index += 1
+        } catch (cause) {
+          controller.error(cause instanceof Error ? cause : new Error('Segment read failed'))
+        }
+      },
+    })
+  }
+
+  async thumbnail(): Promise<Response> {
+    return new Response('No thumbnail', { status: 404 })
   }
 
   async upload(
@@ -289,202 +182,169 @@ export class AggregateDriver implements StorageDriver {
     filename: string,
     body: ReadableStream | ArrayBuffer,
     contentType: string,
-    size: number
+    size: number,
   ): Promise<FileItem> {
-    const cleanPath = await this.pooledPath(path) ?? ''
-    if (!cleanPath) {
-      throw new HTTPException(403, { message: `Files can only be added inside a folder in ${POOL_NAME}.` })
-    }
-
-    const wanted = filename.toLowerCase()
-    const drives = await this.poolDrives(cleanPath)
-    const candidates = await Promise.all(drives.map(async drive => {
-      const driver = createDriver(this.env, drive)
-      if (!driver.capabilities.includes('upload')) return null
-      const providerPath = poolProviderPath(drive.id, cleanPath)
-      try {
-        // Survey all bounded pages so visible names cannot be shadowed.
-        const survey = await surveyFolder(driver, providerPath, wanted)
-        return { drive, driver, providerPath, held: survey.count, taken: survey.taken, complete: survey.complete }
-      } catch {
-        // A failed survey proves neither availability nor pool membership.
-        try {
-          await ensurePath(driver, providerPath)
-          return { drive, driver, providerPath, held: 0, taken: false, complete: false }
-        } catch {
-          return null
-        }
-      }
-    }))
-    if (candidates.some(entry => entry === null || !entry.complete)) {
-      throw new HTTPException(503, {
-        message: 'Could not verify every pooled storage for duplicate names. Retry when all folder listings are complete.',
-      })
-    }
-    const usable = candidates.filter(entry => entry !== null)
-    // Reject names already held anywhere in the merged namespace.
-    const children = await loadPoolChildren(this.env.DB, cleanPath)
-    if (usable.some(entry => entry.taken) || children.some(child => child.name.toLowerCase() === wanted)) {
-      throw new HTTPException(409, { message: `“${filename}” already exists in this folder` })
-    }
-
-    const scored = await Promise.all(usable.map(async entry => {
-      const status = await driveStatus(this.env, entry.drive)
-      const free = status.usage?.freeBytes
-      return {
-        entry,
-        healthy: status.health.ok,
-        held: entry.held,
-        freeBytes: free === null || free === undefined
-          ? null
-          : Math.max(0, free - await reservedBytes(this.env, entry.drive.id)),
-      }
-    }))
-    const target = pickPlacement(scored, size)
-    if (!target) {
-      throw new HTTPException(507, { message: 'Every vault that reports its capacity is too full for this file' })
-    }
-    await reserve(this.env, target.drive.id, size)
+    this.requireMagician('upload')
+    const parentPath = normalizeVirtualPath(path)
+    await this.assertReadable(parentPath)
+    await assertPoolParent(this.env, parentPath)
+    const target = joinVirtualPath(parentPath, filename)
+    await assertPoolPathFree(this.env, target)
+    const perSegment = segmentSize(this.env)
+    if (size > perSegment) throw new HTTPException(413, { message: 'File is larger than one piece; use the chunked upload' })
+    const bytes = body instanceof ArrayBuffer ? body : await new Response(body).arrayBuffer()
+    if (bytes.byteLength !== size || size <= 0) throw new HTTPException(400, { message: 'Invalid upload size' })
+    const object = await insertPoolObject(this.env, {
+      parentPath,
+      name: filename,
+      path: target,
+      owner: this.actor.userId!,
+      size,
+      contentType,
+      keyEnc: await generateWrappedKey(this.env.DATA_ENCRYPTION_KEY),
+      segmentSize: perSegment,
+      uploading: true,
+    })
     try {
-      const item = await target.driver.upload(target.providerPath, filename, body, contentType, size)
-      // Status is advisory; a KV fault must not turn a completed upload into a retry.
-      await invalidateStatus(this.env, target.drive.id).catch(() => {})
-      return { ...item, id: await encodePoolFileId(this.env.DATA_ENCRYPTION_KEY, target.drive.id, item.id) }
-    } finally {
-      // Failed writes must not reserve imaginary bytes.
-      await release(this.env, target.drive.id, size).catch(() => {})
+      await storePoolSegment(this.env, object, 0, bytes)
+      await this.env.DB.prepare(
+        "UPDATE pool_objects SET status = 'ready', expires_at = NULL, updated_at = ? WHERE id = ?"
+      ).bind(new Date().toISOString(), object.id).run()
+      return this.fileItem({ ...object, status: 'ready', expires_at: null })
+    } catch (cause) {
+      await deletePoolObjectData(this.env, object)
+      throw cause
     }
+  }
+
+  async mkdir(path: string, name: string): Promise<FileItem> {
+    this.requireMagician('create folders')
+    if (!isValidName(name)) throw new HTTPException(400, { message: 'Invalid folder name' })
+    const parentPath = normalizeVirtualPath(path)
+    if (parentPath !== '/') {
+      if (!await this.folderAt(parentPath)) throw new HTTPException(404, { message: 'Pool folder not found' })
+      await this.assertReadable(parentPath)
+    }
+    const target = joinVirtualPath(parentPath, name)
+    await assertNoPoolDeletion(this.env.DB, parentPath, name)
+    await assertPoolPathFree(this.env, target)
+    const memberIds = parentPath === '/'
+      ? this.drives.filter(drive => drive.pool_contributor !== 0).map(drive => drive.id)
+      : await loadPoolDriveIds(this.env.DB, parentPath)
+    if (memberIds.length === 0) throw new HTTPException(404, { message: 'No contributed storage is connected yet' })
+    await insertPoolFolder(this.env.DB, {
+      path: target,
+      name,
+      parentPath,
+      userId: this.actor.userId,
+    }, memberIds)
+    const folder = await this.folderAt(target)
+    if (!folder) throw new HTTPException(500, { message: 'Folder creation did not complete' })
+    return (await this.folderItem(folder))!
   }
 
   async remove(fileId: string): Promise<void> {
+    if (fileId === CAULDRON_README_ID) throw new HTTPException(403, { message: 'The Cauldron README is managed by MagicDrive' })
+    this.requireMagician('delete')
     const { driveId, id } = decodeAggregateId(fileId)
     if (driveId === POOL_ID) return this.dispelFolder(id)
-    const { drive, id: real } = await this.pooledFile(driveId, id, 'delete')
-    await createDriver(this.env, drive).remove(real)
+    if (driveId !== MANAGED_FILE_ID) throw new HTTPException(404, { message: 'Pool file not found' })
+    const object = await getPoolObject(this.env, id)
+    if (!object) throw new HTTPException(404, { message: 'Pool file not found' })
+    await this.assertReadable(object.parent_path)
+    await deletePoolObjectData(this.env, object)
   }
 
-  async rename(fileId: string, newName: string, path?: string): Promise<Pick<FileItem, 'id' | 'name'>> {
+  async rename(fileId: string, newName: string): Promise<Pick<FileItem, 'id' | 'name'>> {
+    this.requireMagician('rename')
     const { driveId, id } = decodeAggregateId(fileId)
-    if (driveId === POOL_ID) {
-      throw new HTTPException(400, {
-        message: `Folders in ${POOL_NAME} exist on every connection at once and cannot be renamed.`,
-      })
-    }
-    const { drive, id: real } = await this.pooledFile(driveId, id, 'rename')
-    if (!path) throw new HTTPException(400, { message: 'Open the containing pooled folder before renaming this file' })
-    const cleanPath = await this.pooledPath(path)
-    if (!cleanPath) throw new HTTPException(400, { message: 'Open the containing pooled folder before renaming this file' })
-    const wanted = newName.toLowerCase()
-    const surveys = await Promise.all((await this.poolDrives(cleanPath)).map(async drive => {
-      try {
-        const survey = await surveyFolder(
-          createDriver(this.env, drive),
-          poolProviderPath(drive.id, cleanPath),
-          wanted,
-        )
-        if (survey.complete) return survey.taken
-      } catch {
-        // Fall through to the same safe refusal as a bounded, incomplete walk.
-      }
-      throw new HTTPException(503, { message: 'Could not verify every pooled storage for duplicate names' })
-    }))
-    if (surveys.some(Boolean)) throw new HTTPException(409, { message: `“${newName}” already exists in this folder` })
-    const renamed = await createDriver(this.env, drive).rename(real, newName)
-    return { id: await encodePoolFileId(this.env.DATA_ENCRYPTION_KEY, drive.id, renamed.id), name: renamed.name }
+    if (driveId === POOL_ID) throw new HTTPException(400, { message: 'Cauldron folders cannot be renamed yet' })
+    if (driveId !== MANAGED_FILE_ID) throw new HTTPException(404, { message: 'Pool file not found' })
+    const object = await getPoolObject(this.env, id)
+    if (!object) throw new HTTPException(404, { message: 'Pool file not found' })
+    await this.assertReadable(object.parent_path)
+    const target = joinVirtualPath(object.parent_path, newName)
+    if (target !== object.path) await assertPoolPathFree(this.env, target)
+    await this.env.DB.prepare(
+      'UPDATE pool_objects SET name = ?, path = ?, updated_at = ? WHERE id = ?'
+    ).bind(newName, target, new Date().toISOString(), object.id).run()
+    return { id: fileId, name: newName }
   }
 
   private async dispelFolder(path: string): Promise<void> {
-    const cleanPath = await this.pooledPath(path) ?? ''
-    if (!cleanPath) {
+    const cleanPath = normalizeVirtualPath(path)
+    if (cleanPath === '/' || !await this.folderAt(cleanPath)) {
       throw new HTTPException(403, { message: `Only folders in ${POOL_NAME} can be removed from here.` })
     }
-    const parts = pathParts(cleanPath)
-    const name = parts[parts.length - 1]
-    const parent = `/${parts.slice(0, -1).join('/')}`
-
-    const drives = await this.poolDrives(cleanPath)
-    const results = await Promise.all(drives.map(async drive => {
-      const driver = createDriver(this.env, drive)
-      try {
-        const folder = await findFolder(driver, poolProviderPath(drive.id, parent), name)
-        if (folder) await driver.remove(folder.id)
-        return { drive, ok: true }
-      } catch {
-        return { drive, ok: false }
-      }
-    }))
-    const failed = results.filter(result => !result.ok)
-    if (drives.length > 0 && failed.length === drives.length) {
-      throw new HTTPException(502, { message: `Could not remove “${name}” from any connected storage` })
-    }
-    // Remove the virtual row; failed provider removals are retried by cron.
-    await Promise.all(failed.map(result => journalPoolDeletion(this.env.DB, result.drive.id, parent, name)))
+    await this.assertReadable(cleanPath)
+    await deletePoolSubtreeData(this.env, cleanPath)
     await removePoolSubtree(this.env.DB, cleanPath)
   }
 
-  private assertRootNameFree(name: string): void {
-    const wanted = name.toLowerCase()
-    if ([...this.roots.keys()].some(existing => existing.toLowerCase() === wanted)) {
-      throw new HTTPException(409, { message: `“${name}” already exists in ${POOL_NAME}` })
+  private async folderAt(path: string): Promise<PoolFolderRecord | null> {
+    return this.env.DB.prepare(
+      `SELECT id, path, name, parent_path, created_by, access_mode, access_password_hash
+         FROM pool_folders WHERE path = ?`
+    ).bind(path).first<PoolFolderRecord>()
+  }
+
+  private async folderItem(folder: PoolFolderRecord, currentAccess?: FolderAccessState): Promise<FileItem | null> {
+    const mode = folder.access_mode ?? 'public'
+    const access = currentAccess
+      ?? await evaluateFolderPolicies(this.env, 'pool', [{
+        id: folder.id,
+        path: folder.path,
+        owner: folder.created_by,
+        access_mode: mode,
+        access_password_hash: folder.access_password_hash ?? null,
+      }], this.request, this.actor.userId, this.actor.isMagician)
+    if (access.hidden) return null
+    return {
+      id: encodePoolId(folder.path),
+      name: folder.name,
+      mimeType: POOL_FOLDER_MIME,
+      size: null,
+      modifiedTime: null,
+      createdTime: null,
+      thumbnailLink: null,
+      isFolder: true,
+      accessMode: mode,
+      locked: access.locked,
     }
   }
 
-  private driveById(driveId: string): DriveRecord {
-    const drive = this.drives.find(entry => entry.id === driveId)
-    if (!drive) throw new HTTPException(404, { message: 'Storage not found' })
-    return drive
+  private fileItem(object: PoolObjectRecord): FileItem {
+    return {
+      id: encodeAggregateId(MANAGED_FILE_ID, object.id),
+      name: object.name,
+      mimeType: object.content_type,
+      size: object.size,
+      modifiedTime: null,
+      createdTime: null,
+      thumbnailLink: null,
+      isFolder: false,
+    }
   }
 
-  private async poolDrives(path: string): Promise<DriveRecord[]> {
-    const members = new Set(await loadPoolDriveIds(this.env.DB, path))
-    return this.drives.filter(drive => members.has(drive.id))
-  }
-
-  /**
-   * Resolve an HMAC-tagged pooled file. The tag proves issuance, not current path
-   * membership, so a previously listed ID can outlive its virtual folder.
-   */
-  private async pooledFile(driveId: string, tagged: string, action: string): Promise<{ drive: DriveRecord; id: string }> {
-    const refusal = new HTTPException(403, {
-      message: `Switch to that storage to ${action} its own files; ${POOL_NAME} only manages what it holds.`,
-    })
-    if (!driveId.startsWith(POOL_FILE_PREFIX)) throw refusal
-    const owner = driveId.slice(POOL_FILE_PREFIX.length)
-    const id = await verifyPoolFileId(this.env.DATA_ENCRYPTION_KEY, owner, tagged)
-    if (id === null) throw refusal
-    return { drive: this.driveById(owner), id }
-  }
-
-  private async target(fileId: string): Promise<{ drive: DriveRecord; id: string }> {
+  private async fileOrThrow(fileId: string): Promise<PoolObjectRecord> {
     const { driveId, id } = decodeAggregateId(fileId)
-    if (driveId === POOL_ID) throw new HTTPException(400, { message: 'Folders cannot be downloaded' })
-    if (!driveId.startsWith(POOL_FILE_PREFIX)) throw new HTTPException(404, { message: 'Pool file not found' })
-    const owner = driveId.slice(POOL_FILE_PREFIX.length)
-    const real = await verifyPoolFileId(this.env.DATA_ENCRYPTION_KEY, owner, id)
-    if (real === null) throw new HTTPException(404, { message: 'Pool file not found' })
-    return { drive: this.driveById(owner), id: real }
+    if (driveId !== MANAGED_FILE_ID) throw new HTTPException(404, { message: 'Pool file not found' })
+    const object = await getPoolObject(this.env, id)
+    if (!object || object.status !== 'ready') throw new HTTPException(404, { message: 'Pool file not found' })
+    return object
+  }
+
+  private assertReadable(path: string): Promise<void> {
+    return assertFolderReadable(this.env, 'pool', path, this.request, this.actor.userId, this.bypassAccess, this.actor.isMagician)
+  }
+
+  private requireMagician(action: string): void {
+    if (!this.actor.isMagician || !this.actor.userId) {
+      throw new HTTPException(403, { message: `${POOL_NAME} is shared storage: only a magician can ${action} here` })
+    }
   }
 }
 
-function poolFolderItem(path: string, name: string, source?: FileItem): FileItem {
-  return {
-    id: encodePoolId(path),
-    name,
-    mimeType: POOL_FOLDER_MIME,
-    size: null,
-    modifiedTime: source?.modifiedTime ?? null,
-    createdTime: source?.createdTime ?? null,
-    thumbnailLink: null,
-    isFolder: true,
-  }
-}
-
-function reason(cause: unknown): string {
-  return cause instanceof Error ? cause.message : 'unknown error'
-}
-
-// Ids stay within the base64url alphabet so they survive the same validation as
-// real provider ids.
 export function encodeAggregateId(driveId: string, fileId: string): string {
   return encodeBase64UrlUtf8(`${driveId}|${fileId}`)
 }
@@ -509,11 +369,11 @@ async function poolTag(secret: string, driveId: string, fileId: string): Promise
   return toHex(await hmacSha256(`magicdrive:pool:v1:${secret}`, `${driveId}|${fileId}`)).slice(0, TAG_LENGTH)
 }
 
+/** Kept for legacy share IDs; new Cauldron files use managed object IDs. */
 export async function encodePoolFileId(secret: string, driveId: string, fileId: string): Promise<string> {
   return encodeAggregateId(`${POOL_FILE_PREFIX}${driveId}`, `${fileId}|${await poolTag(secret, driveId, fileId)}`)
 }
 
-/** Null when the tag is absent or does not match, which means the id was made up. */
 export async function verifyPoolFileId(secret: string, driveId: string, tagged: string): Promise<string | null> {
   const separator = tagged.lastIndexOf('|')
   if (separator < 1) return null
@@ -521,7 +381,6 @@ export async function verifyPoolFileId(secret: string, driveId: string, tagged: 
   const tag = tagged.slice(separator + 1)
   const expected = await poolTag(secret, driveId, fileId)
   if (tag.length !== expected.length) return null
-  // Length is public; the comparison itself stays constant-time.
   let diff = 0
   for (let index = 0; index < expected.length; index += 1) diff |= tag.charCodeAt(index) ^ expected.charCodeAt(index)
   return diff === 0 ? fileId : null

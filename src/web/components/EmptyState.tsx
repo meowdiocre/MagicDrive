@@ -14,7 +14,6 @@ interface EmptyStateProps {
   title: string
   description: string
   action?: ReactNode
-  /** Swaps the glyph for the brand illustration on the app's landing moments. */
   illustration?: boolean
 }
 

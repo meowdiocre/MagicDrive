@@ -6,18 +6,20 @@ import { createDriver, PROVIDERS } from './drivers/registry'
 import type { Capability, StorageDriver } from './drivers/contract'
 import { sha256Hex } from './lib/crypto'
 import { driveAccessMode } from './lib/access'
+import { capacityForDrives, writableDrives } from './lib/capacity'
 import { fail, ok } from './lib/http'
 import { isValidName, normalizeVirtualPath } from './lib/path'
-import { isPoolContributor, loadPoolRoots } from './lib/pool'
+import { isPoolContributor, loadPoolRoots, retryPoolDeletions } from './lib/pool'
 import { authRoutes } from './routes/auth'
 import { oauthRoutes } from './routes/oauth'
 import { shareRoutes } from './routes/shares'
 import { driveRoutes, loadAllDrives, loadDrive } from './routes/drives'
 import { vaultRoutes } from './routes/vault'
-import { AggregateDriver, GLOBAL_DRIVE_ID, POOL_NAME } from './drivers/aggregate'
+import { AggregateDriver, decodeAggregateId, GLOBAL_DRIVE_ID, POOL_NAME, verifyPoolFileId } from './drivers/aggregate'
 import { VaultDriver } from './drivers/vault'
-import { retryPoolDeletions } from './lib/pool'
-import { cleanupExpiredUploads, VAULT_DRIVE_ID, VAULT_NAME } from './lib/vault'
+import { cleanupExpiredPoolUploads } from './lib/pool-vault'
+import { cleanupExpiredUploads, ownerVaults, VAULT_DRIVE_ID, VAULT_NAME } from './lib/vault'
+import { folderRoutes } from './routes/folders'
 import type { AppEnv, Bindings, DriveRecord, Session } from './types'
 
 const app = new Hono<AppEnv>()
@@ -81,7 +83,7 @@ app.post('/api/auth/logout', async c => {
 
 // Browsing and downloading are public. Signing in is only needed to contribute
 // storage, and then only for the drives you own.
-for (const route of ['/api/files', '/api/files/*', '/api/search', '/api/drives', '/api/drives/*']) {
+for (const route of ['/api/files', '/api/files/*', '/api/search', '/api/drives', '/api/drives/*', '/api/capacity']) {
   app.use(route, optionalSession)
 }
 for (const route of ['/api/drives', '/api/drives/*']) {
@@ -93,10 +95,51 @@ for (const route of ['/api/drives', '/api/drives/*']) {
 for (const route of ['/api/shares', '/api/shares/*', '/api/vault', '/api/vault/*']) {
   app.use(route, requireSession)
 }
+for (const route of ['/api/folders', '/api/folders/*']) app.use(route, optionalSession)
 
 app.route('/api/shares', shareRoutes)
 app.route('/api/drives', driveRoutes)
 app.route('/api/vault', vaultRoutes)
+app.route('/api/folders', folderRoutes)
+
+app.get('/api/capacity', async c => {
+  const requested = c.req.query('drive')
+  if (requested === GLOBAL_DRIVE_ID) {
+    if (!await isMagician(c)) return fail(c, 'Cauldron capacity is available to Magicians only', 403)
+    const contributors = (await loadAllDrives(c)).filter(isPoolContributor)
+    const writable = writableDrives(c.env, contributors)
+    const managed = await c.env.DB.prepare(
+      'SELECT COALESCE(SUM(size), 0) AS bytes FROM pool_segments'
+    ).first<{ bytes: number }>()
+    return ok(c, {
+      scope: 'connected',
+      kind: 'pool',
+      ...(await capacityForDrives(c.env, writable.drives, writable.unavailableStorages)),
+      managedBytes: managed?.bytes ?? 0,
+    })
+  }
+
+  if (requested === VAULT_DRIVE_ID) {
+    const session = tryGetSession(c)
+    if (!session) return fail(c, 'Authentication required', 401)
+    const drives = await ownerVaults(c.env, session.userId)
+    const capacity = await capacityForDrives(c.env, drives)
+    const managed = await c.env.DB.prepare(
+      `SELECT COALESCE(SUM(segments.size), 0) AS bytes
+       FROM vault_segments segments
+       JOIN vault_objects objects ON objects.id = segments.object_id
+       WHERE objects.owner = ?`
+    ).bind(session.userId).first<{ bytes: number }>()
+    return ok(c, {
+      scope: 'connected',
+      kind: 'vault',
+      ...capacity,
+      managedBytes: managed?.bytes ?? 0,
+    })
+  }
+
+  return fail(c, 'Unknown virtual storage', 400)
+})
 
 const WRITE_CAPABILITIES: readonly Capability[] = ['upload', 'mkdir', 'delete', 'rename']
 
@@ -128,7 +171,7 @@ async function resolveDriver(c: Context<AppEnv>): Promise<Resolved | null> {
 
   if (requested === VAULT_DRIVE_ID) {
     // Any signed-in member may write; the driver checks ownership per object.
-    const driver = new VaultDriver(c.env, session?.userId ?? null)
+    const driver = new VaultDriver(c.env, session?.userId ?? null, c.req.raw)
     const allowed = session
       ? driver.capabilities
       : driver.capabilities.filter(capability => !WRITE_CAPABILITIES.includes(capability))
@@ -153,7 +196,7 @@ async function resolveDriver(c: Context<AppEnv>): Promise<Resolved | null> {
     const driver = new AggregateDriver(c.env, poolDrives, roots, {
       userId: session?.userId ?? null,
       isMagician: magician,
-    })
+    }, c.req.raw)
     return { driver, drive: POOLED_DRIVE, allowed: path => driver.allowed(path), canWrite: magician }
   }
 
@@ -168,7 +211,7 @@ async function resolveDriver(c: Context<AppEnv>): Promise<Resolved | null> {
   const driver = new AggregateDriver(c.env, poolDrives, roots, {
     userId: session?.userId ?? null,
     isMagician: magician,
-  })
+  }, c.req.raw)
   return { driver, drive: POOLED_DRIVE, allowed: path => driver.allowed(path), canWrite: magician }
 }
 
@@ -250,10 +293,13 @@ app.get('/api/providers', c => {
 })
 
 app.get('/api/search', async c => {
+  const query = (c.req.query('q') ?? '').trim()
+  if (query.length < 2) return ok(c, { items: [] })
+  if (new TextEncoder().encode(query).byteLength > 48) return fail(c, 'Search is too long', 400)
   const resolved = await resolveDriver(c)
   if (!resolved) return ok(c, { items: [] })
   if (!resolved.driver.capabilities.includes('search')) return fail(c, 'This provider does not support search', 400)
-  return ok(c, { items: await resolved.driver.search(c.req.query('q') ?? '') })
+  return ok(c, { items: await resolved.driver.search(query) })
 })
 
 /** A caller-supplied path is a bad request, not a fault, when it cannot be normalized. */
@@ -288,12 +334,6 @@ app.post('/api/files/mkdir', async c => {
   const { driver } = await resolveForWrite(c, { capability: 'mkdir', action: 'create folders', support: 'folders', path })
   const name = (body?.name ?? '').trim()
   if (!isValidName(name)) return fail(c, 'Invalid folder name', 400)
-  // A folder conjured in the pool lands on every connection, and any that refused
-  // it belongs in the response rather than in a log the magician will never read.
-  if (driver instanceof AggregateDriver) {
-    const { item, storages } = await driver.conjureFolder(path, name)
-    return ok(c, { ...item, storages }, 201)
-  }
   return ok(c, await driver.mkdir(path, name), 201)
 })
 
@@ -363,14 +403,29 @@ app.get('/s/:token', async c => {
     return fail(c, 'Share link has expired', 410)
   }
   if (share.virtual_drive_id === VAULT_DRIVE_ID) {
-    return hardenContent(await new VaultDriver(c.env, null).download(share.file_id, c.req.raw, 'inline'), 'inline')
+    return hardenContent(await new VaultDriver(c.env, null, c.req.raw, true).download(share.file_id, c.req.raw, 'inline'), 'inline')
   }
   const drive = shareDrive(share)
+  if (share.virtual_drive_id === GLOBAL_DRIVE_ID && !drive) {
+    const [poolDrives, roots] = await Promise.all([
+      loadAllDrives(c).then(drives => drives.filter(isPoolContributor)),
+      loadPoolRoots(c.env.DB),
+    ])
+    if (poolDrives.length === 0) return fail(c, 'Share storage no longer exists', 404)
+    const driver = new AggregateDriver(c.env, poolDrives, roots, { userId: null, isMagician: false }, c.req.raw, true)
+    return hardenContent(await driver.download(share.file_id, c.req.raw, 'inline'), 'inline')
+  }
   if (!drive) return fail(c, 'Share storage no longer exists', 404)
-  const driver = share.virtual_drive_id === GLOBAL_DRIVE_ID
-    ? new AggregateDriver(c.env, [drive], [], { userId: null, isMagician: false })
-    : createDriver(c.env, drive)
-  return hardenContent(await driver.download(share.file_id, c.req.raw, 'inline'), 'inline')
+  if (share.virtual_drive_id === GLOBAL_DRIVE_ID) {
+    const decoded = (() => {
+      try { return decodeAggregateId(share.file_id) } catch { return null }
+    })()
+    if (!decoded || decoded.driveId !== `pool:${drive.id}`) return fail(c, 'Share link not found', 404)
+    const fileId = await verifyPoolFileId(c.env.DATA_ENCRYPTION_KEY, drive.id, decoded.id)
+    if (!fileId) return fail(c, 'Share link not found', 404)
+    return hardenContent(await createDriver(c.env, drive).download(fileId, c.req.raw, 'inline'), 'inline')
+  }
+  return hardenContent(await createDriver(c.env, drive).download(share.file_id, c.req.raw, 'inline'), 'inline')
 })
 
 interface SharedDownload {
@@ -415,6 +470,7 @@ export default {
   async scheduled(_controller: ScheduledController, env: Bindings, ctx: ExecutionContext) {
     // Expired vault uploads and half-finished pooled deletions, swept hourly.
     ctx.waitUntil(cleanupExpiredUploads(env))
+    ctx.waitUntil(cleanupExpiredPoolUploads(env))
     ctx.waitUntil(retryPoolDeletions(env))
   },
 }

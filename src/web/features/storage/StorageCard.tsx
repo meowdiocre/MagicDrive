@@ -72,7 +72,7 @@ export function StorageCard({ drive, onRename, onRemove }: StorageCardProps) {
         <p className="mt-0.5 truncate text-sm text-vault-muted">{drive.provider_label ?? provider.label}</p>
         <p className="mt-0.5 font-vault-mono text-xs text-vault-subtle">
           added {formatDate(drive.created_at)}
-          {drive.is_owner ? ' · credentials encrypted at rest' : ' · browse & download only'}
+          {!drive.is_owner && ' · read-only'}
         </p>
         <UsageLine drive={drive} />
       </div>

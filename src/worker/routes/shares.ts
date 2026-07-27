@@ -1,10 +1,13 @@
 import { Hono } from 'hono'
-import { getSession } from '../auth/session'
+import { getSession, hasDriveUnlock, isMagician } from '../auth/session'
 import { decodeAggregateId, GLOBAL_DRIVE_ID, POOL_NAME } from '../drivers/aggregate'
 import { randomToken, sha256Hex } from '../lib/crypto'
+import { driveAccessMode } from '../lib/access'
+import { assertFolderReadable } from '../lib/folder-access'
 import { fail, ok } from '../lib/http'
-import { VAULT_DRIVE_ID, VAULT_NAME } from '../lib/vault'
-import type { AppEnv } from '../types'
+import { getPoolObject } from '../lib/pool-vault'
+import { getObject, VAULT_DRIVE_ID, VAULT_NAME } from '../lib/vault'
+import type { AppEnv, DriveRecord } from '../types'
 
 interface ShareRow {
   id: string
@@ -50,21 +53,41 @@ shareRoutes.post('/', async c => {
   if (requestedDriveId === VAULT_DRIVE_ID) {
     driveId = null
     virtualDriveId = VAULT_DRIVE_ID
-    const file = await c.env.DB.prepare(
-      "SELECT id FROM vault_objects WHERE id = ? AND kind = 'file' AND status = 'ready'"
-    ).bind(body.fileId).first<{ id: string }>()
-    if (!file) return fail(c, 'File not found', 404)
+    const file = await getObject(c.env, body.fileId)
+    if (!file || file.kind !== 'file' || file.status !== 'ready') return fail(c, 'File not found', 404)
+    await assertFolderReadable(c.env, 'vault', file.parent_path, c.req.raw, session.userId)
   } else if (requestedDriveId === GLOBAL_DRIVE_ID) {
     virtualDriveId = GLOBAL_DRIVE_ID
-    const target = decodeAggregateId(body.fileId).driveId
-    if (target === 'pool') return fail(c, 'Folders cannot be shared', 400)
-    driveId = target.startsWith('pool:') ? target.slice('pool:'.length) : target
+    let target: ReturnType<typeof decodeAggregateId>
+    try {
+      target = decodeAggregateId(body.fileId)
+    } catch {
+      return fail(c, 'Invalid file ID', 400)
+    }
+    if (target.driveId !== 'managed') return fail(c, 'File not found', 404)
+    const file = await getPoolObject(c.env, target.id)
+    if (!file || file.status !== 'ready') return fail(c, 'File not found', 404)
+    await assertFolderReadable(c.env, 'pool', file.parent_path, c.req.raw, session.userId, false, await isMagician(c))
+    driveId = null
   }
-  if (!driveId && virtualDriveId !== VAULT_DRIVE_ID) return fail(c, 'Storage not found', 404)
+  if (!driveId && virtualDriveId !== VAULT_DRIVE_ID && virtualDriveId !== GLOBAL_DRIVE_ID) {
+    return fail(c, 'Storage not found', 404)
+  }
   const drive = driveId
-    ? await c.env.DB.prepare('SELECT id FROM drives WHERE id = ?').bind(driveId).first<{ id: string }>()
+    ? await c.env.DB.prepare(
+      `SELECT id, user_id, provider, provider_variant, name, root_id, refresh_token_enc,
+              config_enc, granted_scope, access_mode, access_password_hash, pool_contributor
+         FROM drives WHERE id = ?`
+    ).bind(driveId).first<DriveRecord>()
     : null
   if (driveId && !drive) return fail(c, 'Storage not found', 404)
+  if (drive) {
+    const mode = driveAccessMode(drive)
+    if (mode === 'private' && drive.user_id !== session.userId) return fail(c, 'Storage not found', 404)
+    if (mode === 'protected' && !await hasDriveUnlock(c.req.raw, c.env, drive.id)) {
+      return fail(c, 'Storage password required', 423)
+    }
+  }
   const name = (body.name ?? '').trim().slice(0, 255) || 'Shared file'
   const hours = body.expiresInHours
   if (hours !== undefined && (!Number.isFinite(hours) || hours < 1 || hours > 24 * 365)) {

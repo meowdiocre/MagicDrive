@@ -1,8 +1,11 @@
-import type { ReactNode } from 'react'
+import type { ComponentProps, ReactNode } from 'react'
 import { DropdownMenu as M } from 'radix-ui'
 import { cn } from '@/lib/cn'
 
-export const DropdownMenu = M.Root
+export function DropdownMenu(props: ComponentProps<typeof M.Root>) {
+  return <M.Root modal={false} {...props} />
+}
+
 export const DropdownMenuTrigger = M.Trigger
 
 export function DropdownMenuContent({ children, align = 'end' }: { children: ReactNode; align?: 'start' | 'center' | 'end' }) {
@@ -12,7 +15,7 @@ export function DropdownMenuContent({ children, align = 'end' }: { children: Rea
         align={align}
         sideOffset={4}
         collisionPadding={8}
-        className="z-50 min-w-44 overflow-hidden rounded-vault-sm border border-vault-rule bg-vault-surface p-1 shadow-[0_0.5rem_0.5rem_var(--color-shadow)] data-[state=open]:animate-panel-in data-[state=closed]:animate-panel-out"
+        className="z-50 max-h-[var(--radix-dropdown-menu-content-available-height)] min-w-44 overflow-y-auto rounded-vault-sm border border-vault-rule bg-vault-surface p-1 shadow-[0_0.5rem_0.5rem_var(--color-shadow)] data-[state=open]:animate-panel-in data-[state=closed]:animate-panel-out"
       >
         {children}
       </M.Content>

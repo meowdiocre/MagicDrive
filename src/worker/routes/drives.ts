@@ -209,11 +209,12 @@ driveRoutes.delete('/:id', async c => {
   const result = await c.env.DB.prepare(
     `DELETE FROM drives
      WHERE id = ?1 AND user_id = ?2
-       AND NOT EXISTS (SELECT 1 FROM vault_segments WHERE drive_id = ?1)`
+       AND NOT EXISTS (SELECT 1 FROM vault_segments WHERE drive_id = ?1)
+       AND NOT EXISTS (SELECT 1 FROM pool_segments WHERE drive_id = ?1)`
   ).bind(id, session.userId).run()
   if (!result.meta.changes) {
     return await driveHoldsSegments(c.env, id)
-      ? fail(c, `This storage holds pieces of ${VAULT_NAME} files. Delete those files first.`, 409)
+      ? fail(c, `This storage holds encrypted MagicVault or Cauldron pieces. Delete those files first.`, 409)
       : fail(c, 'Storage not found, or you do not own it', 404)
   }
   return ok(c, { deleted: true })

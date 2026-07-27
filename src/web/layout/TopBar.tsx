@@ -65,6 +65,7 @@ export function TopBar({ onOpenNav, menuButtonRef, value, onChange, onSubmit, on
           onChange={event => onChange(event.target.value)}
           placeholder="Search this storage"
           aria-label="Search files in the active storage"
+          minLength={2}
           // Not `disabled`: that blurs the focused field and collapses the soft keyboard.
           readOnly={searching}
           aria-busy={searching}

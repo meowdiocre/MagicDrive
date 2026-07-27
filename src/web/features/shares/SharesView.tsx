@@ -12,7 +12,7 @@ export function SharesView({ shares }: { shares: SharesState }) {
   const [revokeTarget, setRevokeTarget] = useState<ShareItem | null>(null)
 
   return (
-    <section className="max-w-5xl">
+    <section className="w-full">
       <header className="mb-6">
         <h1 className="m-0 font-vault-display text-2xl font-semibold tracking-[-0.03em]">Share links</h1>
         <p className="mt-1 max-w-[62ch] text-sm text-vault-muted">

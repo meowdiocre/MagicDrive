@@ -115,11 +115,11 @@ assert.deepEqual((await payload<{ items: Array<{ name: string }> }>(protectedLis
 const poolListing = await payload<{ items: Array<{ name: string }> }>(await app.request(
   'http://localhost/api/files?drive=global&path=/', undefined, bindings,
 ))
-assert.deepEqual(poolListing.items.map(item => item.name), ['Shared'])
+assert.deepEqual(poolListing.items.map(item => item.name), ['Shared', 'README.md'])
 const pooledPrivateListing = await payload<{ items: Array<{ name: string }> }>(await app.request(
   'http://localhost/api/files?drive=global&path=/Shared', undefined, bindings,
 ))
-assert.deepEqual(pooledPrivateListing.items.map(item => item.name), ['pooled.txt'])
+assert.deepEqual(pooledPrivateListing.items.map(item => item.name), [])
 assert.equal(pooledPrivateListing.items.some(item => item.name === 'private.txt'), false)
 
 const privateAnonymous = await app.request(
@@ -188,6 +188,58 @@ assert.ok(oauthState?.accessPasswordHash)
 assert.equal(oauthState.accessPasswordHash.includes(password), false)
 assert.equal(await verifyStorageAccessPassword(bindings.DATA_ENCRYPTION_KEY, password, oauthState.accessPasswordHash), true)
 assert.equal(oauthState.poolContributor, false)
+
+const vaultFolderResponse = await app.request(
+  'http://localhost/api/files/mkdir?drive=vault',
+  {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...identify(connectorToken).headers as Record<string, string> },
+    body: JSON.stringify({ path: '/', name: 'Protected vault' }),
+  },
+  bindings,
+)
+assert.equal(vaultFolderResponse.status, 201)
+const vaultFolder = await payload<{ id: string }>(vaultFolderResponse)
+const protectedFolder = await app.request(
+  `http://localhost/api/folders/vault/${vaultFolder.id}`,
+  {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...identify(connectorToken).headers as Record<string, string> },
+    body: JSON.stringify({ accessMode: 'protected', password }),
+  },
+  bindings,
+)
+assert.equal(protectedFolder.status, 200)
+const vaultRoot = await payload<{ items: Array<{ name: string; locked?: boolean }> }>(await app.request(
+  'http://localhost/api/files?drive=vault&path=/', undefined, bindings,
+))
+assert.equal(vaultRoot.items.find(item => item.name === 'Protected vault')?.locked, true)
+assert.equal((await app.request('http://localhost/api/files?drive=vault&path=/Protected%20vault', undefined, bindings)).status, 423)
+const unlockFolder = await app.request(
+  `http://localhost/api/folders/vault/${vaultFolder.id}/unlock`,
+  { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) },
+  bindings,
+)
+assert.equal(unlockFolder.status, 200)
+const vaultFolderCookie = unlockFolder.headers.get('Set-Cookie')!.split(';')[0]
+assert.equal((await app.request(
+  'http://localhost/api/files?drive=vault&path=/Protected%20vault',
+  { headers: { Cookie: vaultFolderCookie } },
+  bindings,
+)).status, 200)
+assert.equal((await app.request(
+  `http://localhost/api/folders/vault/${vaultFolder.id}`,
+  {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...identify(connectorToken).headers as Record<string, string> },
+    body: JSON.stringify({ accessMode: 'private' }),
+  },
+  bindings,
+)).status, 200)
+const hiddenVault = await payload<{ items: Array<{ name: string }> }>(await app.request(
+  'http://localhost/api/files?drive=vault&path=/', identify(ownerToken), bindings,
+))
+assert.equal(hiddenVault.items.some(item => item.name === 'Protected vault'), false)
 
 assert.ok(publicFile.id)
 db.close()

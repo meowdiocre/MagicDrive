@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Button, Dialog } from './ui'
+import { Button, Dialog, DialogDescription } from './ui'
 
 interface ConfirmDialogProps {
   open: boolean
@@ -42,7 +42,7 @@ export function ConfirmDialog({
         </>
       }
     >
-      <p className="text-sm leading-relaxed text-vault-muted">{message}</p>
+      <DialogDescription className="text-sm leading-relaxed text-vault-muted">{message}</DialogDescription>
     </Dialog>
   )
 }

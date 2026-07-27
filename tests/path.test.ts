@@ -5,7 +5,9 @@ import { escapeDriveQuery, normalizeVirtualPath, pathParts } from '../src/worker
 import { decryptSecret, encryptSecret, hmacSha256, sha256, sha256Hex, toHex } from '../src/worker/lib/crypto'
 import { decodeBase64UrlUtf8, encodeBase64UrlUtf8 } from '../src/worker/lib/base64'
 import { providerFileResponse } from '../src/worker/lib/file-response'
+import { summarizeCapacity, type CapacitySummary } from '../src/worker/lib/capacity'
 import { readTextPreview } from '../src/web/features/files/readTextPreview'
+import { formatBytes } from '../src/web/lib/format'
 import { driveHref, driveIdFromSearch, resolveDriveId } from '../src/web/features/storage/driveRoute'
 import { app } from '../src/worker/index'
 
@@ -20,6 +22,7 @@ assert.equal(resolveDriveId([{ id: 'public-1', is_virtual: false }], 'public-1',
 assert.equal(resolveDriveId([{ id: 'public-1', is_virtual: false }], 'missing', 'global'), 'global')
 assert.equal(driveHref('https://drive.example/?theme=dark', { id: 'public-1', is_virtual: false }), '/?theme=dark&drive=public-1')
 assert.equal(driveHref('https://drive.example/?drive=public-1', { id: 'global', is_virtual: true }), '/')
+assert.equal(driveHref('https://drive.example/', { id: 'vault', is_virtual: true }), '/?drive=vault')
 
 // Known-answer vectors: the S3 request signer is built on these.
 assert.equal(await sha256Hex(''), 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
@@ -147,6 +150,37 @@ assert.match(proxied.headers.get('Content-Disposition') ?? '', /filename\*=UTF-8
 assert.equal(await proxied.text(), 'data')
 
 assert.equal(await readTextPreview(new Response('abcdef'), 4), 'abcd')
+assert.equal(formatBytes(0), '0 B')
+assert.equal(formatBytes(1024 ** 4 + 512 * 1024 ** 3, 2), '1.50 TB')
+assert.equal((await app.request(`http://localhost/api/search?q=${'x'.repeat(49)}`, undefined, bindings)).status, 400)
+
+const status = (usage: { usedBytes: number | null; totalBytes: number | null; freeBytes: number | null } | null, ok = true) => ({
+  usage,
+  health: { ok },
+  checkedAt: 'now',
+})
+const aggregate = summarizeCapacity([
+  status({ usedBytes: 20, totalBytes: 100, freeBytes: 80 }),
+  status({ usedBytes: null, totalBytes: 200, freeBytes: 150 }),
+  status({ usedBytes: 1, totalBytes: null, freeBytes: null }),
+  status(null, false),
+], 1)
+assert.deepEqual(aggregate, {
+  usedBytes: 70,
+  totalBytes: 300,
+  freeBytes: 230,
+  knownStorages: 2,
+  unknownStorages: 1,
+  unavailableStorages: 2,
+} satisfies CapacitySummary)
+assert.deepEqual(summarizeCapacity([status({ usedBytes: 25, totalBytes: 100, freeBytes: null })]), {
+  usedBytes: 25,
+  totalBytes: 100,
+  freeBytes: 75,
+  knownStorages: 1,
+  unknownStorages: 0,
+  unavailableStorages: 0,
+})
 
 const migrationDb = new DatabaseSync(':memory:')
 migrationDb.exec(readFileSync(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8'))

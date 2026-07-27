@@ -4,6 +4,11 @@ import type { Capability, StorageDriver } from './contract'
 import { providerFileResponse } from '../lib/file-response'
 import { escapeLike, joinVirtualPath, normalizeVirtualPath } from '../lib/path'
 import { sha256Hex } from '../lib/crypto'
+import { assertFolderReadable, evaluateFolderPolicies, folderAccess, isFolderAccessError } from '../lib/folder-access'
+import type { FolderAccessState } from '../lib/folder-access'
+import {
+  README_NAME, systemReadmeItem, systemReadmeResponse, VAULT_README, VAULT_README_ID,
+} from '../lib/readme'
 import { decryptSegment, generateWrappedKey, unwrapKey } from '../lib/vault-crypto'
 import {
   assertParentWritable, assertPathFree, childCount, deleteObjectData, getObject, getObjectByPath,
@@ -16,14 +21,16 @@ export const VAULT_FOLDER_MIME = 'application/vnd.magicdrive.vault-folder'
 /**
  * A virtual drive whose tree lives in D1 and whose bytes live as encrypted
  * segments striped across the object owner's own connected vaults. Reads are
- * public like everything else; every mutation checks the object's owner.
+ * public unless a folder policy restricts it; every mutation checks ownership.
  */
 export class VaultDriver implements StorageDriver {
   readonly capabilities: readonly Capability[] = ['list', 'search', 'download', 'upload', 'mkdir', 'delete', 'rename']
 
   constructor(
     private readonly env: Bindings,
-    private readonly userId: string | null
+    private readonly userId: string | null,
+    private readonly request: Request | null = null,
+    private readonly bypassAccess = false,
   ) {}
 
   async list(path: string): Promise<ListResult> {
@@ -31,23 +38,63 @@ export class VaultDriver implements StorageDriver {
     if (cleanPath !== '/') {
       const folder = await getObjectByPath(this.env, cleanPath)
       if (!folder || folder.kind !== 'folder') throw new HTTPException(404, { message: 'Folder not found' })
+      await this.assertReadable(cleanPath)
     }
     const children = await listChildren(this.env, cleanPath)
-    return { path: cleanPath, items: children.map(child => this.toItem(child)), nextPageToken: null }
+    const items = (await Promise.all(children.map(child => this.toItem(child))))
+      .filter((item): item is FileItem => item !== null)
+    if (cleanPath === '/' && !items.some(item => item.name.toLowerCase() === README_NAME.toLowerCase())) {
+      items.push(systemReadmeItem(VAULT_README_ID, VAULT_README))
+    }
+    return { path: cleanPath, items, nextPageToken: null }
   }
 
   async search(query: string): Promise<FileItem[]> {
     const trimmed = query.trim()
     if (trimmed.length < 2) return []
-    return (await searchObjects(this.env, trimmed)).map(object => this.toItem(object))
+    const items: FileItem[] = []
+    for (const object of await searchObjects(this.env, trimmed)) {
+      try {
+        const access = await folderAccess(
+          this.env,
+          'vault',
+          object.kind === 'folder' ? object.path : object.parent_path,
+          this.request,
+          this.userId,
+        )
+        if (access.hidden || access.locked) continue
+        const item = await this.toItem(object, object.kind === 'folder' ? access : undefined)
+        if (item) items.push(item)
+      } catch (error) {
+        if (!isFolderAccessError(error)) throw error
+      }
+    }
+    return items
   }
 
-  private toItem(object: VaultObjectRecord): FileItem {
-    return { ...toFileItem(object), readOnly: object.owner !== this.userId }
+  private async toItem(object: VaultObjectRecord, currentAccess?: FolderAccessState): Promise<FileItem | null> {
+    const access = object.kind === 'folder'
+      ? currentAccess ?? await evaluateFolderPolicies(this.env, 'vault', [{
+        id: object.id,
+        path: object.path,
+        owner: object.owner,
+        access_mode: object.access_mode ?? 'public',
+        access_password_hash: object.access_password_hash ?? null,
+      }], this.request, this.userId)
+      : null
+    if (access?.hidden) return null
+    return {
+      ...toFileItem(object),
+      readOnly: object.owner !== this.userId,
+      accessMode: object.kind === 'folder' ? object.access_mode ?? 'public' : undefined,
+      locked: access?.locked,
+    }
   }
 
   async download(fileId: string, request: Request, disposition: 'attachment' | 'inline' = 'attachment'): Promise<Response> {
+    if (fileId === VAULT_README_ID) return systemReadmeResponse(VAULT_README, disposition)
     const object = await this.fileOrThrow(fileId)
+    await this.assertReadable(object.parent_path)
     const segments = await listSegments(this.env, object.id)
     const total = object.size ?? 0
     if (!object.key_enc || segments.length === 0 || total === 0) {
@@ -131,6 +178,7 @@ export class VaultDriver implements StorageDriver {
       throw new HTTPException(413, { message: 'File is larger than one piece; use the chunked upload' })
     }
     const parentPath = normalizeVirtualPath(path)
+    await this.assertReadable(parentPath)
     await assertParentWritable(this.env, parentPath, owner)
     const target = joinVirtualPath(parentPath, filename)
     await assertPathFree(this.env, target)
@@ -158,6 +206,7 @@ export class VaultDriver implements StorageDriver {
   async mkdir(path: string, name: string): Promise<FileItem> {
     const owner = this.requireUser('create folders')
     const parentPath = normalizeVirtualPath(path)
+    await this.assertReadable(parentPath)
     await assertParentWritable(this.env, parentPath, owner)
     const target = joinVirtualPath(parentPath, name)
     await assertPathFree(this.env, target)
@@ -166,7 +215,11 @@ export class VaultDriver implements StorageDriver {
   }
 
   async remove(fileId: string): Promise<void> {
+    if (fileId === VAULT_README_ID) {
+      throw new HTTPException(403, { message: 'The MagicVault README is managed by MagicDrive' })
+    }
     const object = await this.ownedOrThrow(fileId, 'delete')
+    await this.assertReadable(object.kind === 'folder' ? object.path : object.parent_path)
     // Counts uploads in flight: a folder emptied of only its visible children
     // would strand whichever upload commits next under a path that is gone.
     if (object.kind === 'folder' && await childCount(this.env, object.path) > 0) {
@@ -176,7 +229,11 @@ export class VaultDriver implements StorageDriver {
   }
 
   async rename(fileId: string, newName: string, _path?: string): Promise<Pick<FileItem, 'id' | 'name'>> {
+    if (fileId === VAULT_README_ID) {
+      throw new HTTPException(403, { message: 'The MagicVault README is managed by MagicDrive' })
+    }
     const object = await this.ownedOrThrow(fileId, 'rename')
+    await this.assertReadable(object.kind === 'folder' ? object.path : object.parent_path)
     const target = joinVirtualPath(object.parent_path, newName)
     if (target !== object.path) await assertPathFree(this.env, target)
     const now = new Date().toISOString()
@@ -201,6 +258,10 @@ export class VaultDriver implements StorageDriver {
   private requireUser(action: string): string {
     if (!this.userId) throw new HTTPException(401, { message: `Sign in to ${action} in MagicVault` })
     return this.userId
+  }
+
+  private assertReadable(path: string): Promise<void> {
+    return assertFolderReadable(this.env, 'vault', path, this.request, this.userId, this.bypassAccess)
   }
 
   private async fileOrThrow(fileId: string): Promise<VaultObjectRecord> {

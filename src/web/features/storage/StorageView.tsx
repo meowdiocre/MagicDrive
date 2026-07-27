@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { HardDrive, Plus, Users } from 'lucide-react'
+import { cn } from '@/lib/cn'
 import { formatBytes } from '@/lib/format'
 import { notify } from '@/lib/toast'
 import { Button } from '@/components/ui'
@@ -24,22 +25,20 @@ export function StorageView({ session, drives, onSignedIn }: StorageViewProps) {
   const [renameTarget, setRenameTarget] = useState<DriveInfo | null>(null)
   const [removeTarget, setRemoveTarget] = useState<DriveInfo | null>(null)
 
-  // The pooled storage is not a connection, so it is not listed here.
   const connections = drives.items.filter(drive => !drive.is_virtual)
   const owned = connections.filter(drive => drive.is_owner)
   const contributed = session ? connections.filter(drive => !drive.is_owner) : connections
   const pool = drives.items.find(drive => drive.is_virtual)
   const poolName = pool?.name ?? 'the pool'
   const reporting = connections.filter(drive => drive.usage?.usedBytes !== null && drive.usage !== undefined && drive.usage !== null).length
+  const splitGroups = Boolean(session && contributed.length > 0)
 
   return (
-    <section className="max-w-5xl">
+    <section className="w-full">
       <header className="mb-6 flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
         <div className="min-w-0">
           <h1 className="m-0 font-vault-display text-2xl font-semibold tracking-[-0.03em]">Storage</h1>
-          <p className="mt-1 max-w-[62ch] text-sm text-vault-muted">
-            Choose who can browse each drive and whether its managed space contributes to {poolName}.
-          </p>
+          <p className="mt-1 max-w-[62ch] text-sm text-vault-muted">Manage access and contribution to {poolName}.</p>
         </div>
         {session
           ? <Button variant="primary" size="sm" onClick={() => setAdding(true)}><Plus /> Connect storage</Button>
@@ -69,7 +68,10 @@ export function StorageView({ session, drives, onSignedIn }: StorageViewProps) {
           />
         </div>
       ) : (
-        <div className="grid gap-6">
+        <div className={cn(
+          'grid gap-6',
+          splitGroups && 'xl:grid-cols-2 xl:items-start',
+        )}>
           {session && (
             <div className="grid gap-3">
               <h2 className="font-vault-mono text-xs uppercase tracking-[0.08em] text-vault-subtle">

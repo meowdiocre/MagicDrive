@@ -1,8 +1,9 @@
-import { apiDelete, apiPost } from '@/api/client'
+import { apiDelete, apiPost, query } from '@/api/client'
 import { uploadWithProgress } from './upload'
 
 interface VaultSession {
   id: string
+  drive: 'vault' | 'global'
   segmentSize: number
   segmentCount: number
 }
@@ -19,8 +20,10 @@ export async function uploadToVault(
   path: string,
   onProgress: (loaded: number, total: number) => void,
   onPhase: (phase: 'uploading' | 'processing') => void,
+  drive: 'vault' | 'global' = 'vault',
 ): Promise<void> {
   const session = await apiPost<VaultSession>('/api/vault/uploads', {
+    drive,
     path,
     name: file.name,
     size: file.size,
@@ -36,7 +39,7 @@ export async function uploadToVault(
         try {
           onPhase('uploading')
           await uploadWithProgress(
-            `/api/vault/uploads/${encodeURIComponent(session.id)}/segments/${index}`,
+            `/api/vault/uploads/${encodeURIComponent(session.id)}/segments/${index}${query({ drive: session.drive })}`,
             slice,
             loaded => onProgress(Math.min(from + loaded, file.size), file.size),
             'PUT',
@@ -51,10 +54,10 @@ export async function uploadToVault(
       if (lastError) throw lastError
     }
     onPhase('processing')
-    await apiPost(`/api/vault/uploads/${encodeURIComponent(session.id)}/commit`, {}, 'Could not finish the upload')
+    await apiPost(`/api/vault/uploads/${encodeURIComponent(session.id)}/commit${query({ drive: session.drive })}`, {}, 'Could not finish the upload')
     onProgress(file.size, file.size)
   } catch (cause) {
-    await apiDelete(`/api/vault/uploads/${encodeURIComponent(session.id)}`, 'cancel failed').catch(() => {})
+    await apiDelete(`/api/vault/uploads/${encodeURIComponent(session.id)}${query({ drive: session.drive })}`, 'cancel failed').catch(() => {})
     throw cause
   }
 }

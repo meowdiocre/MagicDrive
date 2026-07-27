@@ -17,7 +17,7 @@ const DEFAULT_SEGMENT_BYTES = 16 * 1024 * 1024
 export const MAX_OBJECT_BYTES = 4 * 1024 * 1024 * 1024
 const UPLOAD_TTL_MS = 24 * 60 * 60 * 1000
 
-const OBJECT_COLUMNS = 'id, parent_path, name, path, kind, owner, size, content_type, key_enc, segment_size, status, expires_at'
+const OBJECT_COLUMNS = 'id, parent_path, name, path, kind, owner, size, content_type, key_enc, segment_size, status, expires_at, access_mode, access_password_hash'
 const SEGMENT_COLUMNS = 'object_id, idx, size, sha256, drive_id, provider_ref'
 
 const README_TEXT = `This folder is managed by MagicDrive (MagicVault).
@@ -66,16 +66,20 @@ export async function childCount(env: Bindings, parentPath: string): Promise<num
 
 export async function driveHoldsSegments(env: Bindings, driveId: string): Promise<boolean> {
   const row = await env.DB.prepare(
-    'SELECT 1 AS present FROM vault_segments WHERE drive_id = ? LIMIT 1'
+    `SELECT 1 AS present FROM vault_segments WHERE drive_id = ?1
+     UNION ALL
+     SELECT 1 AS present FROM pool_segments WHERE drive_id = ?1
+     LIMIT 1`
   ).bind(driveId).first<{ present: number }>()
   return row !== null
 }
 
 export async function searchObjects(env: Bindings, query: string): Promise<VaultObjectRecord[]> {
+  // ponytail: keep 20 results until folder policies are batch-resolved.
   const rows = await env.DB.prepare(
     `SELECT ${OBJECT_COLUMNS} FROM vault_objects
      WHERE status = 'ready' AND name LIKE ? ESCAPE '\\' COLLATE NOCASE
-     ORDER BY name COLLATE NOCASE ASC LIMIT 100`
+     ORDER BY name COLLATE NOCASE ASC LIMIT 20`
   ).bind(`%${escapeLike(query)}%`).all<VaultObjectRecord>()
   return rows.results ?? []
 }

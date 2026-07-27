@@ -1,5 +1,3 @@
-// Worker responses are { data } on success and { error } on failure.
-
 export function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error ? cause.message : fallback
 }
@@ -37,7 +35,6 @@ function jsonInit(method: string, body: unknown): RequestInit {
   return { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
 }
 
-/** Builds a query string from the defined params only. */
 export function query(params: Record<string, string | null | undefined>): string {
   const search = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {

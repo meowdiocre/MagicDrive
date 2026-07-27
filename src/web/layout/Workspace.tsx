@@ -78,7 +78,7 @@ export function Workspace({ session, onLogout, onSignedIn, theme }: WorkspacePro
           invalid={files.isSearchView && Boolean(files.error)}
         />
 
-        <div className="w-full max-w-336 flex-1 px-6 py-6 max-[60rem]:px-4">
+        <div className="w-full flex-1 px-6 py-6 max-[60rem]:px-4">
           {view === 'files' && (
             <FilesView
               files={files}

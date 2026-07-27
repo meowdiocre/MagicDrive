@@ -23,7 +23,7 @@ export function Breadcrumbs({ path, onNavigate }: { path: string; onNavigate: (p
           <span className="flex shrink-0 items-center gap-1" key={crumb.value}>
             {index > 0 && <ChevronRight className="size-3 shrink-0 text-vault-rule-strong" aria-hidden="true" />}
             <button
-              className="rounded-vault-xs px-1 py-0.5 text-inherit outline-offset-1 hover:text-vault-accent disabled:pointer-events-none disabled:text-vault-ink"
+              className="min-h-9 rounded-vault-xs px-2 py-1 text-inherit outline-offset-1 hover:text-vault-accent disabled:pointer-events-none disabled:text-vault-ink max-[60rem]:min-h-11"
               onClick={() => onNavigate(crumb.value)}
               disabled={isLast}
               aria-current={isLast ? 'page' : undefined}

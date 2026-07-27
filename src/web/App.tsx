@@ -12,7 +12,7 @@ export default function App() {
   return (
     <TooltipProvider>
       {booting ? (
-        <div className="grid min-h-dvh place-items-center gap-3 font-vault-mono text-sm text-vault-muted">
+        <div className="flex min-h-dvh flex-col items-center justify-center gap-3 font-vault-mono text-sm text-vault-muted">
           <Brand />
           <span>Loading MagicDrive</span>
         </div>

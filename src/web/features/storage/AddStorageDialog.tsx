@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Cloud, EyeOff, Globe2, HardDrive, Layers, Link2, LockKeyhole } from 'lucide-react'
+import { Cloud, HardDrive, Layers, Link2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { apiGet } from '@/api/client'
 import { notify } from '@/lib/toast'
 import { cn } from '@/lib/cn'
 import { useAsyncAction } from '@/hooks/useAsyncAction'
 import { Button, Dialog, Field } from '@/components/ui'
+import { AccessModePicker } from '@/components/AccessControls'
 import type { DrivesState } from './useDrives'
 import type { ProviderDef, StorageAccessMode } from '@/types'
 
@@ -15,17 +16,6 @@ const BASE_ICONS: Record<ProviderDef['base'], LucideIcon> = {
   webdav: Link2,
   s3: HardDrive,
 }
-
-const ACCESS_OPTIONS: Array<{
-  value: StorageAccessMode
-  label: string
-  description: string
-  icon: LucideIcon
-}> = [
-  { value: 'public', label: 'Public', description: 'Anyone can browse this drive.', icon: Globe2 },
-  { value: 'protected', label: 'Password protected', description: 'Anyone with the password can browse it.', icon: LockKeyhole },
-  { value: 'private', label: 'Private', description: 'Only you can browse this drive.', icon: EyeOff },
-]
 
 const FALLBACK_PROVIDERS: ProviderDef[] = [
   { id: 'google', label: 'Google Drive', base: 'google', auth: 'oauth', capabilities: [], fields: [] },
@@ -71,7 +61,7 @@ export function AddStorageDialog({ open, drives, onClose }: { open: boolean; dri
     if (!open) return
     apiGet<ProviderDef[]>('/api/providers', 'Unable to load providers')
       .then(list => { if (list.length > 0) setProviders(list) })
-      .catch(() => {})
+      .catch(cause => notify.error(cause, 'Using built-in providers'))
   }, [open])
 
   const active = useMemo(
@@ -123,7 +113,7 @@ export function AddStorageDialog({ open, drives, onClose }: { open: boolean; dri
       onOpenChange={next => { if (!next) { reset(); onClose() } }}
       dismissable={!busy}
       title="Connect storage"
-      description="Visibility and MagicPool contribution are separate choices."
+      description="Visibility and Cauldron contribution are separate."
       className="w-[min(34rem,calc(100vw-2rem))] max-[40rem]:bottom-0 max-[40rem]:top-auto max-[40rem]:max-h-[calc(100dvh-0.5rem)] max-[40rem]:w-full max-[40rem]:translate-y-0 max-[40rem]:rounded-b-none max-[40rem]:border-x-0 max-[40rem]:border-b-0"
       footer={(
         <>
@@ -161,40 +151,15 @@ export function AddStorageDialog({ open, drives, onClose }: { open: boolean; dri
 
         <fieldset className="grid gap-2">
           <legend className="mb-2 text-sm font-medium text-vault-ink">Access</legend>
-          <div className="grid gap-2">
-            {ACCESS_OPTIONS.map(option => {
-              const Icon = option.icon
-              const selected = accessMode === option.value
-              return (
-                <label
-                  key={option.value}
-                  className={cn(
-                    'flex cursor-pointer items-start gap-3 rounded-vault-sm border border-vault-rule bg-vault-paper px-3 py-2.5 transition-colors duration-(--dur-fast) hover:border-vault-rule-strong',
-                    'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-vault-accent-soft',
-                    selected && 'border-vault-accent bg-vault-accent-soft',
-                  )}
-                >
-                  <input
-                    className="sr-only"
-                    type="radio"
-                    name="storage-access"
-                    value={option.value}
-                    checked={selected}
-                    onChange={() => {
-                      setAccessMode(option.value)
-                      if (option.value !== 'protected') setPassword('')
-                      setError('')
-                    }}
-                  />
-                  <Icon className={cn('mt-0.5 size-4 shrink-0 text-vault-subtle', selected && 'text-vault-accent')} />
-                  <span className="grid min-w-0 gap-0.5">
-                    <span className="text-sm font-medium text-vault-ink">{option.label}</span>
-                    <span className="text-xs leading-relaxed text-vault-muted">{option.description}</span>
-                  </span>
-                </label>
-              )
-            })}
-          </div>
+          <AccessModePicker
+            name="storage-access"
+            value={accessMode}
+            onChange={value => {
+              setAccessMode(value)
+              if (value !== 'protected') setPassword('')
+              setError('')
+            }}
+          />
         </fieldset>
 
         {accessMode === 'protected' && (
@@ -219,8 +184,8 @@ export function AddStorageDialog({ open, drives, onClose }: { open: boolean; dri
             onChange={event => setPoolContributor(event.target.checked)}
           />
           <span className="grid min-w-0 gap-0.5">
-            <span className="flex items-center gap-1.5 text-sm font-medium text-vault-ink"><Layers className="size-4 text-vault-accent" /> Contribute capacity to MagicPool</span>
-            <span className="text-xs leading-relaxed text-vault-muted">MagicPool uses a separate managed folder. Personal files stay private.</span>
+            <span className="flex items-center gap-1.5 text-sm font-medium text-vault-ink"><Layers className="size-4 text-vault-accent" /> Contribute capacity to The Cauldron</span>
+            <span className="text-xs leading-relaxed text-vault-muted">Personal files stay private.</span>
           </span>
         </label>
 

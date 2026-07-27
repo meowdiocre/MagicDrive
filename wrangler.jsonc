@@ -15,13 +15,8 @@
 			"/s/*"
 		]
 	},
-	// MAGICIAN_USERS grants the magician role, which creates folders in the pooled
-	// storage on every connection at once. Comma-separated usernames only: there is
-	// no "*", and an empty value means nobody holds the role.
-	//
-	// INVITE_SPELL closes registration to anyone who cannot say it. Empty leaves
-	// registration open, which is the default: an account by itself only lets
-	// someone contribute their own storage, and reading is public regardless.
+	// Comma-separated magician usernames. Empty disables the role.
+	// Empty INVITE_SPELL leaves registration open.
 	"vars": {
 		"MAGICIAN_USERS": "meowdiocre",
 		"INVITE_SPELL": ""
@@ -40,8 +35,7 @@
 			"id": "9d79df151836436b9acd304a58408283"
 		}
 	],
-	// Sweeps expired MagicVault upload sessions and retries pooled-folder
-	// deletions that failed on an unreachable connection.
+	// Cleans expired uploads and pending provider deletions.
 	"triggers": {
 		"crons": ["17 * * * *"]
 	},

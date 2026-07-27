@@ -4,7 +4,7 @@ import { findFolder } from '../drivers/tree'
 import { escapeLike, normalizeVirtualPath } from './path'
 import type { Bindings, DriveRecord, PoolFolderRecord } from '../types'
 
-const POOL_COLUMNS = 'id, path, name, parent_path, created_by'
+const POOL_COLUMNS = 'id, path, name, parent_path, created_by, access_mode, access_password_hash'
 
 export function isPoolContributor(drive: Pick<DriveRecord, 'pool_contributor'>): boolean {
   return drive.pool_contributor !== 0

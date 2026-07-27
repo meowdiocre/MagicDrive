@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronRight, Download, Eye, MoreHorizontal, Pencil, Share2, Trash2 } from 'lucide-react'
+import { ChevronRight, Download, Eye, LockKeyhole, MoreHorizontal, Pencil, Share2, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { fileKind, formatBytes, formatDate } from '@/lib/format'
 import {
@@ -26,6 +26,7 @@ function Thumb({ item, driveId }: { item: FileItem; driveId?: string }) {
   const Icon = fileIcon(item)
 
   if (failed || item.isFolder || !hasThumbnail(item.mimeType)) {
+    if (item.isFolder && item.locked) return <LockKeyhole className="size-4.5" />
     return <Icon className="size-4.5" />
   }
   return (
@@ -48,9 +49,10 @@ interface FileRowProps {
   onShare?: () => void
   onRename?: () => void
   onDelete?: () => void
+  onAccess?: () => void
 }
 
-export function FileRow({ item, layout, driveId, navigable = true, onOpen, onShare, onRename, onDelete }: FileRowProps) {
+export function FileRow({ item, layout, driveId, navigable = true, onOpen, onShare, onRename, onDelete, onAccess }: FileRowProps) {
   const isGrid = layout === 'grid'
   const canPreview = !item.isFolder && previewKind(item.mimeType, item.name) !== 'none'
   const TrailingIcon = item.isFolder ? ChevronRight : canPreview ? Eye : Download
@@ -79,7 +81,7 @@ export function FileRow({ item, layout, driveId, navigable = true, onOpen, onSha
         <button
           className="min-w-0 truncate text-left text-sm font-medium outline-offset-2 after:absolute after:inset-0 after:content-['']"
           onClick={onOpen}
-          aria-label={item.isFolder ? `Open folder ${item.name}` : canPreview ? `Preview ${item.name}` : `Download ${item.name}`}
+          aria-label={item.isFolder ? `${item.locked ? 'Unlock' : 'Open'} folder ${item.name}` : canPreview ? `Preview ${item.name}` : `Download ${item.name}`}
         >
           {item.name}
         </button>
@@ -87,12 +89,12 @@ export function FileRow({ item, layout, driveId, navigable = true, onOpen, onSha
 
       {isGrid ? (
         <span className="col-start-2 truncate font-vault-mono text-xs text-vault-subtle">
-          {item.isFolder ? 'Folder' : `${fileKind(item.mimeType, item.name)} · ${formatBytes(item.size)}`}
+          {item.isFolder ? `Folder${item.accessMode && item.accessMode !== 'public' ? ` · ${item.accessMode}` : ''}` : `${fileKind(item.mimeType, item.name)} · ${formatBytes(item.size)}`}
         </span>
       ) : (
         <>
           <span className="truncate font-vault-mono text-xs text-vault-subtle max-[56rem]:hidden">
-            {item.isFolder ? 'Folder' : fileKind(item.mimeType, item.name)}
+            {item.isFolder ? `Folder${item.accessMode && item.accessMode !== 'public' ? ` · ${item.accessMode}` : ''}` : fileKind(item.mimeType, item.name)}
           </span>
           <span className="font-vault-mono text-xs tabular-nums text-vault-subtle max-[56rem]:hidden">
             {item.isFolder ? '-' : formatBytes(item.size)}
@@ -128,6 +130,11 @@ export function FileRow({ item, layout, driveId, navigable = true, onOpen, onSha
                   </DropdownMenuItem>
                 )}
               </>
+            )}
+            {item.isFolder && onAccess && (
+              <DropdownMenuItem onSelect={onAccess}>
+                <LockKeyhole /> Folder access
+              </DropdownMenuItem>
             )}
             {(onRename || onDelete) && !item.isFolder && <DropdownMenuSeparator />}
             {onRename && (

@@ -6,6 +6,9 @@ import type { AppEnv, Bindings, Session, UserRole } from '../types'
 const SESSION_TTL = 60 * 60 * 24 * 14
 const SESSION_COOKIE = 'vd_session'
 const DRIVE_UNLOCK_TTL = 60 * 30
+const FOLDER_UNLOCK_TTL = 60 * 30
+
+export type FolderSpace = 'vault' | 'pool'
 
 function cookieValue(cookieHeader: string | null, name: string): string | null {
   if (!cookieHeader) return null
@@ -132,6 +135,40 @@ export async function hasDriveUnlock(request: Request, env: Bindings, driveId: s
 
 async function unlockCookieName(driveId: string): Promise<string> {
   return `md_unlock_${(await sha256Hex(driveId)).slice(0, 20)}`
+}
+
+export async function grantFolderUnlock(
+  request: Request,
+  env: Bindings,
+  space: FolderSpace,
+  folderId: string,
+  passwordHash: string,
+): Promise<string> {
+  const token = randomToken(32)
+  await env.SESSIONS.put(
+    `folder-unlock:${space}:${folderId}:${await sha256Hex(token)}`,
+    await sha256Hex(passwordHash),
+    { expirationTtl: FOLDER_UNLOCK_TTL },
+  )
+  const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : ''
+  return `${await folderUnlockCookieName(space, folderId)}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${FOLDER_UNLOCK_TTL}${secure}`
+}
+
+export async function hasFolderUnlock(
+  request: Request,
+  env: Bindings,
+  space: FolderSpace,
+  folderId: string,
+  passwordHash: string | null,
+): Promise<boolean> {
+  if (!passwordHash) return false
+  const token = cookieValue(request.headers.get('Cookie'), await folderUnlockCookieName(space, folderId))
+  if (!token) return false
+  return await env.SESSIONS.get(`folder-unlock:${space}:${folderId}:${await sha256Hex(token)}`) === await sha256Hex(passwordHash)
+}
+
+async function folderUnlockCookieName(space: FolderSpace, folderId: string): Promise<string> {
+  return `md_folder_${(await sha256Hex(`${space}:${folderId}`)).slice(0, 20)}`
 }
 
 /**

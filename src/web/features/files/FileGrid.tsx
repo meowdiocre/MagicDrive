@@ -12,7 +12,7 @@ export function gridClass(layout: Layout) {
 export function LoadingRows({ layout }: { layout: Layout }) {
   return (
     <div className={gridClass(layout)} aria-hidden="true">
-      {Array.from({ length: layout === 'grid' ? 8 : 8 }, (_, index) => (
+      {Array.from({ length: 8 }, (_, index) => (
         <div
           key={index}
           className={cn(

@@ -4,13 +4,9 @@ import { demoItems, demoMode } from '@/demo'
 import { MAX_DIRECT_UPLOAD_BYTES, uploadWithProgress } from './upload'
 import { uploadToVault } from './vaultUpload'
 import type { UploadTask } from './upload'
-import type { Capability, FileItem, ListResult } from '@/types'
+import type { Capability, FileItem, ListResult, StorageAccessMode } from '@/types'
 
 export const SEARCH_PATH = 'Search results'
-
-/** Per-storage outcome when creating a pooled folder. */
-export type PoolTarget = { storage: string; ok: boolean; error?: string }
-export type CreatedFolder = FileItem & { storages?: PoolTarget[] }
 
 export function useFiles(driveId: string) {
   const [path, setPathState] = useState('/')
@@ -189,12 +185,13 @@ export function useFiles(driveId: string) {
 
       update({ status: 'uploading' })
       try {
-        if (drive === 'vault') {
+        if (drive === 'vault' || drive === 'global') {
           await uploadToVault(
             file,
             target,
             (loaded, total) => update({ loaded, total }),
             status => update({ status }),
+            drive,
           )
         } else {
           if (file.size > MAX_DIRECT_UPLOAD_BYTES) {
@@ -228,10 +225,9 @@ export function useFiles(driveId: string) {
 
   const dismissUploads = useCallback(() => setUploads([]), [])
 
-  /** In the pooled storage the folder is created on every connection, so the result reports each one. */
-  async function createFolder(name: string): Promise<CreatedFolder> {
+  async function createFolder(name: string): Promise<FileItem> {
     const target = path === SEARCH_PATH ? '/' : path
-    const created = await apiPost<CreatedFolder>(
+    const created = await apiPost<FileItem>(
       `/api/files/mkdir${query({ drive })}`,
       { path: target, name },
       'Could not create folder',
@@ -256,6 +252,30 @@ export function useFiles(driveId: string) {
     setItems(current => current.filter(entry => entry.id !== item.id))
   }
 
+  async function setFolderAccess(item: FileItem, accessMode: StorageAccessMode, password: string): Promise<void> {
+    const space = folderSpace(drive)
+    await apiPatch<{ accessMode: StorageAccessMode; locked: boolean }>(
+      `/api/folders/${space}/${encodeURIComponent(item.id)}`,
+      { accessMode, password },
+      'Could not update folder access',
+    )
+    setItems(current => current.map(entry => entry.id === item.id
+      ? { ...entry, accessMode, locked: accessMode === 'protected' }
+      : entry))
+    void loadFiles(path === SEARCH_PATH ? '/' : path)
+  }
+
+  async function unlockFolder(item: FileItem, password: string): Promise<void> {
+    const space = folderSpace(drive)
+    await apiPost(
+      `/api/folders/${space}/${encodeURIComponent(item.id)}/unlock`,
+      { password },
+      'Unable to unlock folder',
+    )
+    setItems(current => current.map(entry => entry.id === item.id ? { ...entry, locked: false } : entry))
+    void loadFiles(path === SEARCH_PATH ? '/' : path)
+  }
+
   function openFolder(item: FileItem) {
     // Search hits carry no path, so their folders cannot be resolved by name.
     if (path === SEARCH_PATH) return
@@ -270,8 +290,14 @@ export function useFiles(driveId: string) {
     loading, loadingMore, searching, searchQuery, error, lockRequired,
     loadFiles, loadMore, search, clearSearch, openFolder,
     uploads, uploadFiles, dismissUploads,
-    createFolder, renameItem, deleteItem,
+    createFolder, renameItem, deleteItem, setFolderAccess, unlockFolder,
   }
+}
+
+function folderSpace(drive: string | undefined): 'vault' | 'pool' {
+  if (drive === 'vault') return 'vault'
+  if (drive === 'global') return 'pool'
+  throw new Error('Folder policies are available in MagicVault and The Cauldron')
 }
 
 export type FilesState = ReturnType<typeof useFiles>

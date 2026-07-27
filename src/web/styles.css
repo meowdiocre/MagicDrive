@@ -67,13 +67,13 @@
 }
 
 @keyframes panel-in {
-  from { opacity: 0; transform: translateY(0.5rem) scale(0.97) }
-  to { opacity: 1; transform: translateY(0) scale(1) }
+  from { opacity: 0; scale: 0.97 }
+  to { opacity: 1; scale: 1 }
 }
 
 @keyframes panel-out {
-  from { opacity: 1; transform: translateY(0) scale(1) }
-  to { opacity: 0; transform: translateY(0.25rem) scale(0.98) }
+  from { opacity: 1; scale: 1 }
+  to { opacity: 0; scale: 0.98 }
 }
 
 @keyframes sheet-in {

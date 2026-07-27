@@ -9,7 +9,6 @@ interface DialogProps {
   onOpenChange: (open: boolean) => void
   title: string
   description?: string
-  hideTitle?: boolean
   className?: string
   children: ReactNode
   footer?: ReactNode
@@ -18,7 +17,7 @@ interface DialogProps {
 }
 
 export function Dialog({
-  open, onOpenChange, title, description, hideTitle, className,
+  open, onOpenChange, title, description, className,
   children, footer, onOpenAutoFocus, dismissable = true,
 }: DialogProps) {
   return (
@@ -36,7 +35,7 @@ export function Dialog({
           )}
         >
           <header className="flex shrink-0 items-start gap-3 border-b border-vault-rule px-5 py-4">
-            <div className={cn('min-w-0 flex-1', hideTitle && 'sr-only')}>
+            <div className="min-w-0 flex-1">
               <D.Title className="truncate text-base font-semibold text-vault-ink">{title}</D.Title>
               {description && (
                 <D.Description className="mt-0.5 font-vault-mono text-xs text-vault-subtle">{description}</D.Description>
@@ -67,3 +66,5 @@ export function Dialog({
     </D.Root>
   )
 }
+
+export const DialogDescription = D.Description

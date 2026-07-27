@@ -8,6 +8,7 @@ import { cleanupExpiredUploads } from '../src/worker/lib/vault'
 import { poolProviderPath, retryPoolDeletions } from '../src/worker/lib/pool'
 import { reservedBytes } from '../src/worker/lib/placement'
 import { invalidateStatus } from '../src/worker/lib/status'
+import { VAULT_README, VAULT_README_ID } from '../src/worker/lib/readme'
 import {
   errorOf, identify, memoryFailing, memoryQuota, memoryStores, memoryUploadFailing, migrate, payload,
   registerMemoryProvider, testBindings,
@@ -80,6 +81,17 @@ const drivesList = await payload<{ items: { id: string; provider: string }[] }>(
   await app.request('http://localhost/api/drives', undefined, bindings),
 )
 assert.ok(drivesList.items.some(item => item.id === 'vault' && item.provider === 'vault'))
+const vaultRoot = await payload<{ items: { id: string; name: string; system?: boolean }[] }>(
+  await app.request('http://localhost/api/files?drive=vault&path=/', undefined, bindings),
+)
+const vaultReadme = vaultRoot.items.find(item => item.name === 'README.md')!
+assert.equal(vaultReadme.system, true)
+assert.equal(await (await app.request(`http://localhost/api/files/${vaultReadme.id}/raw?drive=vault`, undefined, bindings)).text(), VAULT_README)
+assert.equal((await app.request(
+  `http://localhost/api/files/${VAULT_README_ID}?drive=vault`,
+  { method: 'DELETE', headers: identify(ana).headers as Record<string, string> },
+  bindings,
+)).status, 403)
 
 // Folders are D1 rows; anonymous visitors browse but never write.
 assert.equal((await json('POST', 'http://localhost/api/files/mkdir?drive=vault', { path: '/', name: 'Books' })).status, 401)
@@ -123,7 +135,7 @@ assert.equal((await json('POST', `http://localhost/api/vault/uploads/${session.i
 // committed MagicVault data.
 assert.throws(
   () => db.exec("DELETE FROM users WHERE id = 'user-1'"),
-  /Cannot delete a user while they own MagicVault objects/,
+  /Cannot delete a user while (they own MagicVault objects|their storage holds managed segments)/,
 )
 assert.equal((db.prepare("SELECT COUNT(*) AS count FROM users WHERE id = 'user-1'").get() as { count: number }).count, 1)
 
@@ -131,6 +143,26 @@ assert.equal((db.prepare("SELECT COUNT(*) AS count FROM users WHERE id = 'user-1
 const segmentHomes = (db.prepare('SELECT DISTINCT drive_id FROM vault_segments').all() as { drive_id: string }[]).map(row => row.drive_id)
 assert.ok(segmentHomes.every(home => home === 'vault-a' || home === 'vault-b'))
 assert.equal(memoryStores.get('vault-ben')?.size ?? 0, 0)
+memoryQuota.set('vault-a', 20_000)
+memoryQuota.set('vault-b', 30_000)
+await invalidateStatus(bindings as never, 'vault-a')
+await invalidateStatus(bindings as never, 'vault-b')
+assert.equal((await app.request('http://localhost/api/capacity?drive=vault', undefined, bindings)).status, 401)
+const anaCapacity = await payload<{
+  kind: string
+  totalBytes: number
+  managedBytes: number
+  knownStorages: number
+}>(await app.request('http://localhost/api/capacity?drive=vault', identify(ana), bindings))
+assert.equal(anaCapacity.kind, 'vault')
+assert.equal(anaCapacity.totalBytes, 50_000)
+assert.equal(anaCapacity.managedBytes, SIZE)
+assert.equal(anaCapacity.knownStorages, 2)
+const benCapacity = await payload<{ managedBytes: number; totalBytes: number | null }>(
+  await app.request('http://localhost/api/capacity?drive=vault', identify(ben), bindings),
+)
+assert.equal(benCapacity.managedBytes, 0)
+assert.equal(benCapacity.totalBytes, null)
 // The README landed next to the first piece on each vault used.
 for (const home of new Set(segmentHomes)) {
   assert.ok(memoryStores.get(home)?.has('MagicVault/README.txt'), `${home} should hold the README`)
