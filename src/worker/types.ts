@@ -1,0 +1,127 @@
+export interface Bindings {
+  ASSETS: Fetcher
+  DB: D1Database
+  SESSIONS: KVNamespace
+  GOOGLE_CLIENT_ID: string
+  GOOGLE_CLIENT_SECRET: string
+  DATA_ENCRYPTION_KEY: string
+  /** Usernames granted the magician role, comma-separated. */
+  MAGICIAN_USERS?: string
+  /** When set, registering requires this spell. Empty leaves registration open. */
+  INVITE_SPELL?: string
+  /** Test override for MagicVault segment size, in bytes. */
+  VAULT_SEGMENT_SIZE?: string
+}
+
+export type UserRole = 'owner' | 'admin' | 'member' | 'magician'
+
+export interface Session {
+  userId: string
+  /** Empty until the account connects its first storage. */
+  driveId: string
+  username: string
+  /** A hint for the interface; authorization re-reads the role from the database. */
+  role?: UserRole
+}
+
+export type AppEnv = {
+  Bindings: Bindings
+  Variables: {
+    session?: Session
+  }
+}
+
+export interface UserRecord {
+  id: string
+  username: string
+  spell_hash: string | null
+  role: UserRole
+}
+
+/** A folder a magician conjured in the pool, materialised at the same path on every connection. */
+export interface PoolFolderRecord {
+  id: string
+  path: string
+  name: string
+  parent_path: string
+  created_by: string | null
+}
+
+export type ProviderId = 'google' | 'webdav' | 's3' | 'global' | 'vault'
+export type StorageAccessMode = 'public' | 'protected' | 'private'
+
+export interface VaultObjectRecord {
+  id: string
+  parent_path: string
+  name: string
+  path: string
+  kind: 'file' | 'folder'
+  owner: string | null
+  size: number | null
+  content_type: string | null
+  key_enc: string | null
+  segment_size: number | null
+  status: 'uploading' | 'ready'
+  expires_at: string | null
+}
+
+export interface VaultSegmentRecord {
+  object_id: string
+  idx: number
+  /** Plaintext bytes; the stored ciphertext is slightly larger. */
+  size: number
+  sha256: string
+  drive_id: string
+  provider_ref: string
+}
+
+export interface DriveRecord {
+  id: string
+  user_id: string
+  provider: ProviderId
+  /** Selected branded preset; provider remains the driver implementation id. */
+  provider_variant?: string | null
+  name: string
+  root_id: string
+  refresh_token_enc: string | null
+  config_enc: string | null
+  granted_scope: string
+  access_mode?: StorageAccessMode
+  access_password_hash?: string | null
+  pool_contributor?: number
+}
+
+export interface WebDavConfig {
+  url: string
+  username: string
+  password: string
+}
+
+export interface S3Config {
+  endpoint: string
+  region: string
+  bucket: string
+  accessKeyId: string
+  secretAccessKey: string
+}
+
+export interface FileItem {
+  id: string
+  name: string
+  mimeType: string
+  size: number | null
+  modifiedTime: string | null
+  createdTime: string | null
+  thumbnailLink: string | null
+  isFolder: boolean
+  /** Set where the caller may browse an item but not change it, as in MagicVault. */
+  readOnly?: boolean
+}
+
+export interface ListResult {
+  path: string
+  items: FileItem[]
+  nextPageToken: string | null
+  /** Set when a merged listing stopped short of the whole folder. */
+  truncated?: boolean
+}

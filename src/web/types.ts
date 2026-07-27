@@ -1,0 +1,79 @@
+export type UserRole = 'owner' | 'admin' | 'member' | 'magician'
+export type StorageAccessMode = 'public' | 'protected' | 'private'
+
+export type Session = {
+  userId: string
+  /** Empty until the account connects its first storage. */
+  driveId: string
+  username: string
+  role?: UserRole
+}
+
+export type FileItem = {
+  id: string
+  name: string
+  mimeType: string
+  size: number | null
+  modifiedTime: string | null
+  isFolder: boolean
+  /** Browsable but not changeable by this viewer, as with another member's vault files. */
+  readOnly?: boolean
+}
+
+export type Capability = 'list' | 'search' | 'download' | 'upload' | 'mkdir' | 'delete' | 'rename' | 'thumbnail'
+
+export type ListResult = {
+  items: FileItem[]
+  nextPageToken?: string | null
+  capabilities?: Capability[]
+  canWrite?: boolean
+  driveId?: string
+  provider?: string
+  /** A merged listing that stopped short of the whole folder. */
+  truncated?: boolean
+}
+
+export type DriveUsage = {
+  usedBytes: number | null
+  totalBytes: number | null
+  freeBytes: number | null
+}
+
+export type DriveInfo = {
+  id: string
+  provider: 'google' | 'webdav' | 's3' | 'global' | 'vault'
+  provider_variant?: string | null
+  provider_label?: string
+  name: string
+  created_at: string
+  owner_name: string
+  is_owner: boolean
+  /** The pooled storage, which has no single connection behind it. */
+  is_virtual: boolean
+  access_mode: StorageAccessMode
+  locked: boolean
+  pool_contributor: boolean
+  usage?: DriveUsage | null
+  health?: { ok: boolean; message?: string }
+}
+
+export type ProviderFieldDef = {
+  key: string
+  label: string
+  type?: 'text' | 'password'
+  placeholder?: string
+  value?: string
+  hint?: string
+}
+
+export type ProviderDef = {
+  id: string
+  label: string
+  base: 'google' | 'webdav' | 's3'
+  auth: 'oauth' | 'config'
+  capabilities: Capability[]
+  fields: ProviderFieldDef[]
+}
+
+export type View = 'files' | 'storage' | 'shares'
+export type Layout = 'list' | 'grid'

@@ -1,0 +1,15 @@
+# Keys accounts, encrypts provider credentials, and hashes spells. Rotating it
+# locks every existing account out, so treat it as permanent.
+DATA_ENCRYPTION_KEY="replace-with-32-random-bytes-in-base64"
+
+# Optional: only needed to offer Google Drive as a storage connector. Signing in
+# never touches Google.
+GOOGLE_CLIENT_ID="replace-me.apps.googleusercontent.com"
+GOOGLE_CLIENT_SECRET="replace-me"
+
+# Magicians create folders in the pooled storage, which are made on every
+# connection at once. Comma-separated usernames; "*" is not accepted.
+MAGICIAN_USERS=""
+
+# Set to require this spell before anyone can register. Empty leaves it open.
+INVITE_SPELL=""

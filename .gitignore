@@ -1,0 +1,25 @@
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Local environment and Cloudflare state
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+!.env.example
+
+# Local tool state
+.codegraph/
+.hallmark/
+.claude/settings.local.json
+
+# Logs and OS files
+*.log
+.DS_Store
+Thumbs.db
+Desktop.ini

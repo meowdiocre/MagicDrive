@@ -1,0 +1,168 @@
+@import url('https://fonts.googleapis.com/css2?family=Gabarito:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+@import '../../tokens.css';
+@import 'tailwindcss';
+
+/* Mirrors how tokens.css resolves the theme: an explicit data-theme wins, and
+   the media query decides only when the user has expressed no preference. */
+@custom-variant dark {
+  &:where(:root[data-theme='dark'], :root[data-theme='dark'] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme='light']), :root:not([data-theme='light']) *) {
+      @slot;
+    }
+  }
+}
+
+@theme inline {
+  --color-vault-paper: var(--color-paper);
+  --color-vault-paper-2: var(--color-paper-2);
+  --color-vault-paper-3: var(--color-paper-3);
+  --color-vault-surface: var(--color-surface);
+  --color-vault-rule: var(--color-rule);
+  --color-vault-rule-strong: var(--color-rule-strong);
+  --color-vault-ink: var(--color-ink);
+  --color-vault-ink-hover: var(--color-ink-hover);
+  --color-vault-muted: var(--color-muted);
+  --color-vault-subtle: var(--color-subtle);
+  --color-vault-accent: var(--color-accent);
+  --color-vault-accent-soft: var(--color-accent-soft);
+  --color-vault-focus: var(--color-focus);
+  --color-vault-danger: var(--color-danger);
+  --color-vault-danger-rule: var(--color-danger-rule);
+  --color-vault-danger-soft: var(--color-danger-soft);
+  --color-vault-success: var(--color-success);
+  --color-vault-success-rule: var(--color-success-rule);
+  --color-vault-warning: var(--color-warning);
+  --color-vault-warning-soft: var(--color-warning-soft);
+  --color-vault-accent-ink: var(--color-accent-ink);
+  --color-vault-shadow: var(--color-shadow);
+  --color-vault-scrim: var(--color-scrim);
+  --font-vault-display: var(--font-display);
+  --font-vault-body: var(--font-body);
+  --font-vault-mono: var(--font-mono);
+  --radius-vault-sm: var(--radius-sm);
+  --radius-vault-xs: var(--radius-xs);
+  --radius-vault-md: var(--radius-md);
+  --radius-vault-lg: var(--radius-lg);
+
+  --animate-fade-in: fade-in var(--dur-ui) var(--ease-out);
+  --animate-fade-out: fade-out var(--dur-fast) var(--ease-in);
+  --animate-panel-in: panel-in var(--dur-ui) var(--ease-out);
+  --animate-panel-out: panel-out var(--dur-fast) var(--ease-in);
+  --animate-sheet-in: sheet-in var(--dur-panel) var(--ease-out);
+  --animate-sheet-out: sheet-out var(--dur-ui) var(--ease-in);
+  --animate-shimmer: shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes fade-in {
+  from { opacity: 0 }
+  to { opacity: 1 }
+}
+
+@keyframes fade-out {
+  from { opacity: 1 }
+  to { opacity: 0 }
+}
+
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(0.5rem) scale(0.97) }
+  to { opacity: 1; transform: translateY(0) scale(1) }
+}
+
+@keyframes panel-out {
+  from { opacity: 1; transform: translateY(0) scale(1) }
+  to { opacity: 0; transform: translateY(0.25rem) scale(0.98) }
+}
+
+@keyframes sheet-in {
+  from { transform: translateX(-100%) }
+  to { transform: translateX(0) }
+}
+
+@keyframes sheet-out {
+  from { transform: translateX(0) }
+  to { transform: translateX(-100%) }
+}
+
+@keyframes shimmer {
+  0%, 100% { opacity: 0.45 }
+  50% { opacity: 0.85 }
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
+  html,
+  body {
+    margin: 0;
+    overflow-x: clip;
+    background: var(--color-paper);
+    color: var(--color-ink);
+  }
+
+  html {
+    color-scheme: light;
+  }
+
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      color-scheme: dark;
+    }
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: var(--font-body);
+    font-size: var(--text-md);
+    line-height: 1.5;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+
+  button {
+    border: 0;
+    background: none;
+  }
+
+  button,
+  a {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

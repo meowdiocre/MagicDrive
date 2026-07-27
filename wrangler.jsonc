@@ -1,0 +1,52 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "vaultdrive",
+	"main": "src/worker/index.ts",
+	"compatibility_date": "2026-07-26",
+  "routes": [
+    { "pattern": "drive.meowdiocre.net", "custom_domain": true }
+  ],
+	"assets": {
+		"directory": "./dist",
+		"binding": "ASSETS",
+		"not_found_handling": "single-page-application",
+		"run_worker_first": [
+			"/api/*",
+			"/s/*"
+		]
+	},
+	// MAGICIAN_USERS grants the magician role, which creates folders in the pooled
+	// storage on every connection at once. Comma-separated usernames only: there is
+	// no "*", and an empty value means nobody holds the role.
+	//
+	// INVITE_SPELL closes registration to anyone who cannot say it. Empty leaves
+	// registration open, which is the default: an account by itself only lets
+	// someone contribute their own storage, and reading is public regardless.
+	"vars": {
+		"MAGICIAN_USERS": "meowdiocre",
+		"INVITE_SPELL": ""
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "vaultdrive",
+			"database_id": "f814bca6-6f3f-47f9-ab87-6465411e0433",
+			"migrations_dir": "migrations"
+		}
+	],
+	"kv_namespaces": [
+		{
+			"binding": "SESSIONS",
+			"id": "9d79df151836436b9acd304a58408283"
+		}
+	],
+	// Sweeps expired MagicVault upload sessions and retries pooled-folder
+	// deletions that failed on an unreachable connection.
+	"triggers": {
+		"crons": ["17 * * * *"]
+	},
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	}
+}

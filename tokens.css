@@ -1,0 +1,120 @@
+/* Hallmark · macrostructure: Workbench · tone: technical-utilitarian · anchor hue: cobalt */
+:root {
+  --color-paper: oklch(97% 0.008 250);
+  --color-paper-2: oklch(94% 0.012 250);
+  --color-paper-3: oklch(91% 0.016 250);
+  --color-surface: oklch(99% 0.004 250);
+  --color-rule: oklch(85% 0.014 250);
+  /* Interactive boundaries (inputs, secondary buttons) need 3:1 per WCAG 1.4.11;
+     --color-rule stays lighter because it only draws decorative dividers. */
+  --color-rule-strong: oklch(58% 0.03 250);
+  --color-ink: oklch(19% 0.018 250);
+  --color-ink-hover: oklch(25% 0.02 250);
+  --color-muted: oklch(45% 0.022 250);
+  --color-subtle: oklch(43% 0.018 250);
+  --color-accent: oklch(49% 0.19 258);
+  --color-accent-soft: oklch(93% 0.045 258);
+  --color-focus: oklch(49% 0.2 258);
+  --color-danger: oklch(49% 0.18 27);
+  --color-danger-rule: oklch(78% 0.08 27);
+  --color-danger-soft: oklch(96% 0.035 27);
+  --color-success: oklch(42% 0.15 145);
+  --color-success-rule: oklch(78% 0.07 145);
+  --color-warning: oklch(52% 0.13 75);
+  --color-warning-soft: oklch(95% 0.04 75);
+  --color-accent-ink: oklch(99% 0.004 250);
+  --color-shadow: oklch(19% 0.018 250 / 0.12);
+  --color-scrim: oklch(19% 0.018 250 / 0.28);
+
+  --font-display: 'Gabarito', ui-sans-serif, sans-serif;
+  --font-body: 'IBM Plex Sans', ui-sans-serif, sans-serif;
+  --font-mono: var(--font-body);
+
+  --text-xs: 0.75rem;
+  --text-2xs: 0.625rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.5rem;
+  --text-display: clamp(2.25rem, 5vw, 4.5rem);
+
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.5rem;
+  --space-xs: 0.75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2rem;
+  --space-xl: 3rem;
+  --space-2xl: 4rem;
+
+  --radius-sm: 0.375rem;
+  --radius-xs: 0.25rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 1rem;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 120ms;
+  --dur-ui: 180ms;
+  --dur-panel: 280ms;
+  --rule-thin: 1px;
+  --space-login-brand: clamp(var(--space-2xl), 14vh, 9rem);
+  --space-login-brand-mobile: clamp(var(--space-xl), 25vh, 9rem);
+}
+
+/* Dark theme. `data-theme` is stamped on <html> by the theme toggle; the media
+   query covers first paint before the script runs when the user has no choice saved. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --color-paper: oklch(16% 0.012 250);
+    --color-paper-2: oklch(20% 0.014 250);
+    --color-paper-3: oklch(25% 0.016 250);
+    --color-surface: oklch(19% 0.013 250);
+    --color-rule: oklch(30% 0.016 250);
+    --color-rule-strong: oklch(56% 0.03 250);
+    --color-ink: oklch(96% 0.006 250);
+    --color-ink-hover: oklch(87% 0.01 250);
+    --color-muted: oklch(74% 0.018 250);
+    --color-subtle: oklch(65% 0.016 250);
+    --color-accent: oklch(72% 0.15 258);
+    --color-accent-soft: oklch(30% 0.055 258);
+    --color-focus: oklch(75% 0.16 258);
+    --color-danger: oklch(72% 0.16 27);
+    --color-danger-rule: oklch(42% 0.09 27);
+    --color-danger-soft: oklch(26% 0.05 27);
+    --color-success: oklch(76% 0.15 145);
+    --color-success-rule: oklch(42% 0.08 145);
+    --color-warning: oklch(78% 0.13 75);
+    --color-warning-soft: oklch(28% 0.05 75);
+    --color-accent-ink: oklch(16% 0.02 250);
+    --color-shadow: oklch(0% 0 0 / 0.5);
+    --color-scrim: oklch(10% 0.01 250 / 0.65);
+  }
+}
+
+:root[data-theme='dark'] {
+  --color-paper: oklch(16% 0.012 250);
+  --color-paper-2: oklch(20% 0.014 250);
+  --color-paper-3: oklch(25% 0.016 250);
+  --color-surface: oklch(19% 0.013 250);
+  --color-rule: oklch(30% 0.016 250);
+  --color-rule-strong: oklch(56% 0.03 250);
+  --color-ink: oklch(96% 0.006 250);
+  --color-ink-hover: oklch(87% 0.01 250);
+  --color-muted: oklch(74% 0.018 250);
+  --color-subtle: oklch(65% 0.016 250);
+  --color-accent: oklch(72% 0.15 258);
+  --color-accent-soft: oklch(30% 0.055 258);
+  --color-focus: oklch(75% 0.16 258);
+  --color-danger: oklch(72% 0.16 27);
+  --color-danger-rule: oklch(42% 0.09 27);
+  --color-danger-soft: oklch(26% 0.05 27);
+  --color-success: oklch(76% 0.15 145);
+  --color-success-rule: oklch(42% 0.08 145);
+  --color-warning: oklch(78% 0.13 75);
+  --color-warning-soft: oklch(28% 0.05 75);
+  --color-accent-ink: oklch(16% 0.02 250);
+  --color-shadow: oklch(0% 0 0 / 0.5);
+  --color-scrim: oklch(10% 0.01 250 / 0.65);
+}
